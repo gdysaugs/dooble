@@ -6,6 +6,7 @@ import { isUnderageImage } from '../_shared/rekognition'
 
 type Env = {
   RUNPOD_API_KEY: string
+  RUNPOD_I2I_ENDPOINT_URL?: string
   RUNPOD_QWEN_ENDPOINT_URL?: string
   RUNPOD_ENDPOINT_URL?: string
   COMFY_ORG_API_KEY?: string
@@ -40,7 +41,9 @@ const normalizeEndpoint = (value?: string) => {
 }
 
 const resolveEndpoint = (env: Env) =>
-  normalizeEndpoint(env.RUNPOD_QWEN_ENDPOINT_URL) || normalizeEndpoint(env.RUNPOD_ENDPOINT_URL)
+  normalizeEndpoint(env.RUNPOD_I2I_ENDPOINT_URL) ||
+  normalizeEndpoint(env.RUNPOD_QWEN_ENDPOINT_URL) ||
+  normalizeEndpoint(env.RUNPOD_ENDPOINT_URL)
 
 type NodeMapEntry = {
   id: string
@@ -85,6 +88,7 @@ const ERROR_NO_TICKETS = '\u30c8\u30fc\u30af\u30f3\u304c\u4e0d\u8db3\u3057\u3066
 const ERROR_INVALID_TICKET_REQUEST = '\u4e0d\u6b63\u306a\u30c8\u30fc\u30af\u30f3\u64cd\u4f5c\u3067\u3059\u3002'
 const ERROR_ID_REQUIRED = 'id\u304c\u5fc5\u8981\u3067\u3059\u3002'
 const ERROR_USAGE_ID_REQUIRED = 'usage_id\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_JOB_NOT_FOUND = 'Job not found.'
 const ERROR_IMAGE_READ_FAILED =
   '\u753b\u50cf\u306e\u8aad\u307f\u53d6\u308a\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002\u753b\u50cf\u3092\u78ba\u8a8d\u3057\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 const ERROR_IMAGE_REQUIRED = '\u753b\u50cf\u304c\u5fc5\u8981\u3067\u3059\u3002'
@@ -95,6 +99,91 @@ const getWorkflowTemplate = async () => workflowTemplate as Record<string, unkno
 const getNodeMap = async () => nodeMapTemplate as NodeMap
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
+
+const parseTicketMetadata = (value: unknown) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+type TicketEventRow = {
+  usage_id: string
+  user_id: string | null
+  email: string | null
+  delta: number | null
+  metadata: Record<string, unknown> | null
+}
+
+const normalizeEmail = (value: string | null | undefined) => (value ?? '').trim().toLowerCase()
+
+const isUsageOwnedByUser = (
+  event: Pick<TicketEventRow, 'user_id' | 'email'>,
+  user: User,
+) => {
+  if (event.user_id && event.user_id === user.id) return true
+  const userEmail = normalizeEmail(user.email ?? '')
+  return Boolean(userEmail && normalizeEmail(event.email) === userEmail)
+}
+
+const fetchUsageEvent = async (
+  admin: ReturnType<typeof createClient>,
+  usageId: string,
+) => {
+  const { data, error } = await admin
+    .from('ticket_events')
+    .select('usage_id, user_id, email, delta, metadata')
+    .eq('usage_id', usageId)
+    .maybeSingle()
+
+  if (error || !data) {
+    return { event: null as TicketEventRow | null, error }
+  }
+
+  return {
+    event: {
+      usage_id: String(data.usage_id),
+      user_id: data.user_id ? String(data.user_id) : null,
+      email: data.email ? String(data.email) : null,
+      delta: Number.isFinite(Number(data.delta)) ? Number(data.delta) : null,
+      metadata: parseTicketMetadata(data.metadata),
+    } satisfies TicketEventRow,
+    error: null,
+  }
+}
+
+const requireOwnedUsageChargeEvent = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+  usageId: string,
+  corsHeaders: HeadersInit,
+) => {
+  const { event, error } = await fetchUsageEvent(admin, usageId)
+  if (error) {
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
+  }
+  if (!event || !isUsageOwnedByUser(event, user) || Number(event.delta) >= 0) {
+    return { response: jsonResponse({ error: ERROR_JOB_NOT_FOUND }, 404, corsHeaders) }
+  }
+  return { event }
+}
+
+const bindUsageToJob = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+  usageId: string,
+  jobId: string | null,
+) => {
+  if (!jobId) return
+  const usageEvent = await fetchUsageEvent(admin, usageId)
+  if (usageEvent.error || !usageEvent.event || !isUsageOwnedByUser(usageEvent.event, user)) {
+    return
+  }
+  const metadata = usageEvent.event.metadata ?? {}
+  if (String(metadata.job_id ?? '') === jobId) return
+  await admin
+    .from('ticket_events')
+    .update({ metadata: { ...metadata, job_id: jobId } })
+    .eq('usage_id', usageId)
+}
 
 const extractBearerToken = (request: Request) => {
   const header = request.headers.get('Authorization') || ''
@@ -323,7 +412,7 @@ const refundTicket = async (
 
   const { data: chargeEvent, error: chargeError } = await admin
     .from('ticket_events')
-    .select('usage_id')
+    .select('usage_id, user_id, email, delta')
     .eq('usage_id', usageId)
     .maybeSingle()
 
@@ -332,6 +421,15 @@ const refundTicket = async (
   }
 
   if (!chargeEvent) {
+    return { skipped: true }
+  }
+
+  const chargeDelta = Number((chargeEvent as { delta?: unknown }).delta)
+  const chargeOwner = {
+    user_id: (chargeEvent as { user_id?: unknown }).user_id ? String((chargeEvent as { user_id?: unknown }).user_id) : null,
+    email: (chargeEvent as { email?: unknown }).email ? String((chargeEvent as { email?: unknown }).email) : null,
+  }
+  if (!Number.isFinite(chargeDelta) || chargeDelta >= 0 || !isUsageOwnedByUser(chargeOwner, user)) {
     return { skipped: true }
   }
 
@@ -565,6 +663,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   if (!usageId) {
     return jsonResponse({ error: ERROR_USAGE_ID_REQUIRED }, 400, corsHeaders)
   }
+  const usageEventResult = await requireOwnedUsageChargeEvent(auth.admin, auth.user, usageId, corsHeaders)
+  if ('response' in usageEventResult) {
+    return usageEventResult.response
+  }
+  const usageJobId = String(usageEventResult.event.metadata?.job_id ?? '')
+  if (!usageJobId || usageJobId !== id) {
+    return jsonResponse({ error: ERROR_JOB_NOT_FOUND }, 404, corsHeaders)
+  }
   if (!env.RUNPOD_API_KEY) {
     return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
   }
@@ -572,7 +678,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const endpoint = resolveEndpoint(env)
   if (!endpoint) {
     return jsonResponse(
-      { error: 'RUNPOD_QWEN_ENDPOINT_URL or RUNPOD_ENDPOINT_URL is invalid or missing.' },
+      { error: 'RUNPOD_I2I_ENDPOINT_URL, RUNPOD_QWEN_ENDPOINT_URL, or RUNPOD_ENDPOINT_URL is invalid or missing.' },
       500,
       corsHeaders,
     )
@@ -656,7 +762,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const endpoint = resolveEndpoint(env)
   if (!endpoint) {
     return jsonResponse(
-      { error: 'RUNPOD_QWEN_ENDPOINT_URL or RUNPOD_ENDPOINT_URL is invalid or missing.' },
+      { error: 'RUNPOD_I2I_ENDPOINT_URL, RUNPOD_QWEN_ENDPOINT_URL, or RUNPOD_ENDPOINT_URL is invalid or missing.' },
       500,
       corsHeaders,
     )
@@ -926,6 +1032,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       return jsonResponse({ error: 'Upstream response is invalid.', usage_id: usageId, ticketsLeft }, 502, corsHeaders)
     }
 
+    const comfyJobId = extractJobId(upstreamPayload)
+    if (comfyJobId) {
+      await bindUsageToJob(auth.admin, auth.user, usageId, String(comfyJobId))
+    }
+
     const isFailure = !upstream.ok || isFailureStatus(upstreamPayload) || hasOutputError(upstreamPayload)
     if (isFailure) {
       const refundResult = await refundTicket(
@@ -1027,6 +1138,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       ticketsLeft = nextTickets
     }
     return jsonResponse({ error: 'Upstream response is invalid.', usage_id: usageId, ticketsLeft }, 502, corsHeaders)
+  }
+
+  const runpodJobId = extractJobId(upstreamPayload)
+  if (runpodJobId) {
+    await bindUsageToJob(auth.admin, auth.user, usageId, String(runpodJobId))
   }
 
   const isFailure = !upstream.ok || isFailureStatus(upstreamPayload) || hasOutputError(upstreamPayload)

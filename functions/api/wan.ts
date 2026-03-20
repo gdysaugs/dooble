@@ -1,13 +1,17 @@
-﻿import workflowI2VTemplate from './wan-workflow-i2v.json'
+import workflowI2VTemplate from './wan-workflow-i2v.json'
 import workflowT2VTemplate from './wan-workflow-t2v.json'
+import workflowAnimateTemplate from './wan-workflow-animate.json'
 import nodeMapI2VTemplate from './wan-node-map-i2v.json'
 import nodeMapT2VTemplate from './wan-node-map-t2v.json'
+import nodeMapAnimateTemplate from './wan-node-map-animate.json'
 import { createClient, type User } from '@supabase/supabase-js'
 import { buildCorsHeaders, isCorsBlocked } from '../_shared/cors'
 import { isUnderageImage } from '../_shared/rekognition'
 
 type Env = {
   RUNPOD_API_KEY: string
+  RUNPOD_WAN_RAPID_FASTMOVE_ENDPOINT_URL?: string
+  RUNPOD_WAN_T2V_ENDPOINT_URL?: string
   RUNPOD_ENDPOINT_URL?: string
   RUNPOD_WAN_ENDPOINT_URL?: string
   COMFY_ORG_API_KEY?: string
@@ -26,8 +30,22 @@ const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
     headers: { ...headers, 'Content-Type': 'application/json' },
   })
 
-const resolveEndpoint = (env: Env) =>
-  (env.RUNPOD_WAN_ENDPOINT_URL ?? env.RUNPOD_ENDPOINT_URL)?.replace(/\/$/, '')
+const resolveEndpoint = (env: Env, mode: GenerationMode = 'i2v') => {
+  if (mode === 't2v') {
+    return (env.RUNPOD_WAN_T2V_ENDPOINT_URL ?? env.RUNPOD_WAN_ENDPOINT_URL ?? env.RUNPOD_ENDPOINT_URL)?.replace(
+      /\/$/,
+      '',
+    )
+  }
+  if (mode === 'i2v') {
+    return (
+      env.RUNPOD_WAN_RAPID_FASTMOVE_ENDPOINT_URL ??
+      env.RUNPOD_WAN_ENDPOINT_URL ??
+      env.RUNPOD_ENDPOINT_URL
+    )?.replace(/\/$/, '')
+  }
+  return (env.RUNPOD_WAN_ENDPOINT_URL ?? env.RUNPOD_ENDPOINT_URL)?.replace(/\/$/, '')
+}
 
 type NodeMapEntry = {
   id: string
@@ -38,6 +56,7 @@ type NodeMapValue = NodeMapEntry | NodeMapEntry[]
 
 type NodeMap = Partial<{
   image: NodeMapValue
+  video: NodeMapValue
   prompt: NodeMapValue
   negative_prompt: NodeMapValue
   seed: NodeMapValue
@@ -51,19 +70,28 @@ type NodeMap = Partial<{
   end_step: NodeMapValue
 }>
 
+type GenerationMode = 'i2v' | 't2v' | 'animate'
+
 const SIGNUP_TICKET_GRANT = 3
-const VIDEO_TICKET_COST = 1
+const DEFAULT_VIDEO_TICKET_COST = 1
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_VIDEO_BYTES = 150 * 1024 * 1024
 const MAX_PROMPT_LENGTH = 500
 const MAX_NEGATIVE_PROMPT_LENGTH = 500
 const FIXED_STEPS = 4
+const FIXED_STEPS_ANIMATE = 6
 const MIN_DIMENSION = 256
 const MAX_DIMENSION = 3000
 const MIN_CFG = 0
 const MAX_CFG = 10
-const FIXED_FPS = 12
-const FIXED_SECONDS = 5
-const FIXED_FRAMES = FIXED_FPS * FIXED_SECONDS
+const FIXED_FPS = 10
+// Wan i2v/t2v length is most stable with 4n+1 frames.
+const VIDEO_DURATION_OPTIONS = [
+  { seconds: 5, frames: 51, ticketCost: 1 },
+  { seconds: 7, frames: 71, ticketCost: 3 },
+  { seconds: 9, frames: 91, ticketCost: 5 },
+] as const
+const FIXED_ANIMATE_FRAMES = 77
 const INTERNAL_SERVER_ERROR_MESSAGE = '\u30b5\u30fc\u30d0\u30fc\u5185\u90e8\u30a8\u30e9\u30fc\u304c\u767a\u751f\u3057\u307e\u3057\u305f\u3002\u6642\u9593\u3092\u304a\u3044\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 const INTERNAL_ERROR_DETAIL = 'internal_error'
 const ERROR_LOGIN_REQUIRED = '\u30ed\u30b0\u30a4\u30f3\u304c\u5fc5\u8981\u3067\u3059\u3002'
@@ -72,16 +100,118 @@ const ERROR_GOOGLE_ONLY = 'Google\u30ed\u30b0\u30a4\u30f3\u306e\u307f\u5bfe\u5fd
 const ERROR_SUPABASE_NOT_SET =
   'SUPABASE_URL \u307e\u305f\u306f SUPABASE_SERVICE_ROLE_KEY \u304c\u8a2d\u5b9a\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002'
 const ERROR_ID_REQUIRED = 'id\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_JOB_NOT_FOUND = 'Job not found.'
 const ERROR_I2V_IMAGE_REQUIRED = 'i2v\u306b\u306f\u753b\u50cf\u304c\u5fc5\u8981\u3067\u3059\u3002'
+const ERROR_ANIMATE_VIDEO_REQUIRED = 'animate\u306b\u306f\u53c2\u7167\u52d5\u753b\u304c\u5fc5\u8981\u3067\u3059\u3002'
 const ERROR_IMAGE_READ_FAILED =
   '\u753b\u50cf\u306e\u8aad\u307f\u53d6\u308a\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002\u753b\u50cf\u3092\u78ba\u8a8d\u3057\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
+const ERROR_VIDEO_READ_FAILED =
+  '\u52d5\u753b\u306e\u8aad\u307f\u53d6\u308a\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002\u52d5\u753b\u3092\u78ba\u8a8d\u3057\u3066\u518d\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
 const UNDERAGE_BLOCK_MESSAGE =
   '\u3053\u306e\u753b\u50cf\u306b\u306f\u66b4\u529b\u7684\u306a\u8868\u73fe\u3001\u4f4e\u5e74\u9f62\u3001\u307e\u305f\u306f\u898f\u7d04\u9055\u53cd\u306e\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059\u3002\u5225\u306e\u753b\u50cf\u3067\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002'
-const getWorkflowTemplate = async (mode: 'i2v' | 't2v') =>
-  (mode === 't2v' ? workflowT2VTemplate : workflowI2VTemplate) as Record<string, unknown>
+type VideoDurationOption = (typeof VIDEO_DURATION_OPTIONS)[number]
 
-const getNodeMap = async (mode: 'i2v' | 't2v') =>
-  (mode === 't2v' ? nodeMapT2VTemplate : nodeMapI2VTemplate) as NodeMap
+const DEFAULT_VIDEO_DURATION_OPTION = VIDEO_DURATION_OPTIONS[0]
+
+const resolveVideoDurationOption = (seconds: number) =>
+  VIDEO_DURATION_OPTIONS.find((option) => option.seconds === seconds) ?? null
+
+const resolveVideoDurationFromInput = (secondsRaw: unknown) => {
+  if (secondsRaw === undefined || secondsRaw === null || secondsRaw === '') {
+    return { option: DEFAULT_VIDEO_DURATION_OPTION as VideoDurationOption, error: null as string | null }
+  }
+
+  const parsedSeconds = Math.floor(Number(secondsRaw))
+  if (!Number.isFinite(parsedSeconds)) {
+    return { option: null as null | VideoDurationOption, error: 'seconds must be a number.' }
+  }
+
+  const option = resolveVideoDurationOption(parsedSeconds)
+  if (!option) {
+    return { option: null as null | VideoDurationOption, error: 'seconds must be one of 5, 7, or 9.' }
+  }
+
+  return { option, error: null as string | null }
+}
+
+const parseTicketMetadata = (value: unknown) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+type TicketEventRow = {
+  usage_id: string
+  user_id: string | null
+  email: string | null
+  delta: number | null
+  metadata: Record<string, unknown> | null
+}
+
+const normalizeEmail = (value: string | null | undefined) => (value ?? '').trim().toLowerCase()
+
+const isUsageOwnedByUser = (
+  event: Pick<TicketEventRow, 'user_id' | 'email'>,
+  user: User,
+) => {
+  if (event.user_id && event.user_id === user.id) return true
+  const userEmail = normalizeEmail(user.email ?? '')
+  return Boolean(userEmail && normalizeEmail(event.email) === userEmail)
+}
+
+const fetchUsageEvent = async (
+  admin: ReturnType<typeof createClient>,
+  usageId: string,
+) => {
+  const { data, error } = await admin
+    .from('ticket_events')
+    .select('usage_id, user_id, email, delta, metadata')
+    .eq('usage_id', usageId)
+    .maybeSingle()
+
+  if (error || !data) {
+    return { event: null as TicketEventRow | null, error }
+  }
+
+  return {
+    event: {
+      usage_id: String(data.usage_id),
+      user_id: data.user_id ? String(data.user_id) : null,
+      email: data.email ? String(data.email) : null,
+      delta: Number.isFinite(Number(data.delta)) ? Number(data.delta) : null,
+      metadata: parseTicketMetadata(data.metadata),
+    } satisfies TicketEventRow,
+    error: null,
+  }
+}
+
+const requireOwnedUsageChargeEvent = async (
+  admin: ReturnType<typeof createClient>,
+  user: User,
+  usageId: string,
+  corsHeaders: HeadersInit,
+) => {
+  const { event, error } = await fetchUsageEvent(admin, usageId)
+  if (error) {
+    return { response: jsonResponse({ error: INTERNAL_SERVER_ERROR_MESSAGE }, 500, corsHeaders) }
+  }
+  if (!event || !isUsageOwnedByUser(event, user) || Number(event.delta) >= 0) {
+    return { response: jsonResponse({ error: ERROR_JOB_NOT_FOUND }, 404, corsHeaders) }
+  }
+  return { event }
+}
+const getWorkflowTemplate = async (mode: GenerationMode) =>
+  (mode === 't2v'
+    ? workflowT2VTemplate
+    : mode === 'animate'
+      ? workflowAnimateTemplate
+      : workflowI2VTemplate) as Record<string, unknown>
+
+const getNodeMap = async (mode: GenerationMode) =>
+  (mode === 't2v'
+    ? nodeMapT2VTemplate
+    : mode === 'animate'
+      ? nodeMapAnimateTemplate
+      : nodeMapI2VTemplate) as NodeMap
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
@@ -313,7 +443,7 @@ const refundTicket = async (
 
   const { data: chargeEvent, error: chargeError } = await admin
     .from('ticket_events')
-    .select('usage_id')
+    .select('usage_id, user_id, email, delta')
     .eq('usage_id', usageId)
     .maybeSingle()
 
@@ -322,6 +452,15 @@ const refundTicket = async (
   }
 
   if (!chargeEvent) {
+    return { skipped: true }
+  }
+
+  const chargeDelta = Number((chargeEvent as { delta?: unknown }).delta)
+  const chargeOwner = {
+    user_id: (chargeEvent as { user_id?: unknown }).user_id ? String((chargeEvent as { user_id?: unknown }).user_id) : null,
+    email: (chargeEvent as { email?: unknown }).email ? String((chargeEvent as { email?: unknown }).email) : null,
+  }
+  if (!Number.isFinite(chargeDelta) || chargeDelta >= 0 || !isUsageOwnedByUser(chargeOwner, user)) {
     return { skipped: true }
   }
 
@@ -377,6 +516,28 @@ const refundTicket = async (
     ticketsLeft: Number.isFinite(ticketsLeft) ? ticketsLeft : undefined,
     alreadyRefunded,
   }
+}
+
+const resolveUsageTicketMeta = (event: TicketEventRow | null) => {
+  if (!event) {
+    return { ticketCost: null as null | number, seconds: null as null | number }
+  }
+
+  let ticketCost: null | number = null
+  const delta = Number(event.delta)
+  if (Number.isFinite(delta) && delta < 0) {
+    ticketCost = Math.max(1, Math.floor(Math.abs(delta)))
+  }
+
+  const metadata = event.metadata
+  const metaCost = Number(metadata?.ticket_cost)
+  if (Number.isFinite(metaCost) && metaCost > 0) {
+    ticketCost = Math.max(1, Math.floor(metaCost))
+  }
+
+  const metaSeconds = Number(metadata?.seconds)
+  const seconds = Number.isFinite(metaSeconds) && metaSeconds > 0 ? Math.floor(metaSeconds) : null
+  return { ticketCost, seconds }
 }
 
 const hasOutputList = (value: unknown) => Array.isArray(value) && value.length > 0
@@ -459,16 +620,16 @@ const estimateBase64Bytes = (value: string) => {
   return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
 }
 
-const ensureBase64Input = (label: string, value: unknown) => {
+const ensureBase64Input = (label: string, value: unknown, maxBytes = MAX_IMAGE_BYTES) => {
   if (typeof value !== 'string' || !value.trim()) return ''
   const trimmed = value.trim()
   if (isHttpUrl(trimmed)) {
-    throw new Error(`${label} must be base64 (image_url is not allowed).`)
+    throw new Error(`${label} must be base64.`)
   }
   const base64 = stripDataUrl(trimmed)
   if (!base64) return ''
   const bytes = estimateBase64Bytes(base64)
-  if (bytes > MAX_IMAGE_BYTES) {
+  if (bytes > maxBytes) {
     throw new Error(`${label} is too large.`)
   }
   return base64
@@ -525,14 +686,44 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   if (!id) {
     return jsonResponse({ error: ERROR_ID_REQUIRED }, 400, corsHeaders)
   }
+  const modeParam = String(url.searchParams.get('mode') ?? '').toLowerCase()
+  const statusMode: GenerationMode = modeParam === 't2v' ? 't2v' : modeParam === 'animate' ? 'animate' : 'i2v'
   if (!env.RUNPOD_API_KEY) {
     return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
   }
 
-  const endpoint = resolveEndpoint(env)
+  const endpoint = resolveEndpoint(env, statusMode)
   if (!endpoint) {
-    return jsonResponse({ error: 'RUNPOD_WAN_ENDPOINT_URL is not set.' }, 500, corsHeaders)
+    return jsonResponse(
+      {
+        error:
+          'WAN endpoint is not set. Configure RUNPOD_WAN_T2V_ENDPOINT_URL for t2v or RUNPOD_WAN_RAPID_FASTMOVE_ENDPOINT_URL for i2v.',
+      },
+      500,
+      corsHeaders,
+    )
   }
+  const usageId = `wan:${id}`
+  const usageEventResult = await requireOwnedUsageChargeEvent(auth.admin, auth.user, usageId, corsHeaders)
+  if ('response' in usageEventResult) {
+    return usageEventResult.response
+  }
+  const requestedSecondsRaw = url.searchParams.get('seconds')
+  const requestedSeconds = requestedSecondsRaw === null ? null : Math.floor(Number(requestedSecondsRaw))
+  const requestedDurationOption =
+    requestedSeconds !== null && Number.isFinite(requestedSeconds)
+      ? resolveVideoDurationOption(requestedSeconds) ?? DEFAULT_VIDEO_DURATION_OPTION
+      : DEFAULT_VIDEO_DURATION_OPTION
+  const usageTicketMeta = resolveUsageTicketMeta(usageEventResult.event)
+  const statusDurationOption =
+    statusMode === 'animate'
+      ? null
+      : resolveVideoDurationOption(usageTicketMeta.seconds ?? requestedDurationOption.seconds) ?? requestedDurationOption
+  const ticketCost =
+    statusMode === 'animate'
+      ? DEFAULT_VIDEO_TICKET_COST
+      : usageTicketMeta.ticketCost ?? statusDurationOption.ticketCost
+
   const upstream = await fetch(`${endpoint}/status/${encodeURIComponent(id)}`, {
     headers: { Authorization: `Bearer ${env.RUNPOD_API_KEY}` },
   })
@@ -546,14 +737,14 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   if (payload && shouldConsumeTicket(payload)) {
-    const usageId = `wan:${id}`
     const ticketMeta = {
       job_id: id,
       status: payload?.status ?? payload?.state ?? null,
       source: 'status',
-      ticket_cost: VIDEO_TICKET_COST,
+      ticket_cost: ticketCost,
+      seconds: statusDurationOption?.seconds ?? null,
     }
-    const result = await consumeTicket(auth.admin, auth.user, ticketMeta, usageId, VIDEO_TICKET_COST, corsHeaders)
+    const result = await consumeTicket(auth.admin, auth.user, ticketMeta, usageId, ticketCost, corsHeaders)
     if ('response' in result) {
       return result.response
     }
@@ -564,15 +755,15 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   if (payload && (isFailureStatus(payload) || hasOutputError(payload))) {
-    const usageId = `wan:${id}`
     const refundMeta = {
       job_id: id,
       status: payload?.status ?? payload?.state ?? null,
       source: 'status',
       reason: 'failure',
-      ticket_cost: VIDEO_TICKET_COST,
+      ticket_cost: ticketCost,
+      seconds: statusDurationOption?.seconds ?? null,
     }
-    const refundResult = await refundTicket(auth.admin, auth.user, refundMeta, usageId, VIDEO_TICKET_COST, corsHeaders)
+    const refundResult = await refundTicket(auth.admin, auth.user, refundMeta, usageId, ticketCost, corsHeaders)
     if ('response' in refundResult) {
       return refundResult.response
     }
@@ -608,11 +799,6 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return jsonResponse({ error: 'RUNPOD_API_KEY is not set.' }, 500, corsHeaders)
   }
 
-  const endpoint = resolveEndpoint(env)
-  if (!endpoint) {
-    return jsonResponse({ error: 'RUNPOD_WAN_ENDPOINT_URL is not set.' }, 500, corsHeaders)
-  }
-
   const payload = await request.json().catch(() => null)
   if (!payload) {
     return jsonResponse({ error: 'Invalid request body.' }, 400, corsHeaders)
@@ -623,16 +809,41 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return jsonResponse({ error: 'workflow overrides are not allowed.' }, 400, corsHeaders)
   }
   const mode = String(input?.mode ?? 'i2v').toLowerCase()
-  if (mode !== 'i2v' && mode !== 't2v') {
-    return jsonResponse({ error: 'mode must be "i2v" or "t2v".' }, 400, corsHeaders)
+  if (mode !== 'i2v' && mode !== 't2v' && mode !== 'animate') {
+    return jsonResponse({ error: 'mode must be "i2v", "t2v", or "animate".' }, 400, corsHeaders)
+  }
+  const generationMode = mode as GenerationMode
+  const endpoint = resolveEndpoint(env, generationMode)
+  if (!endpoint) {
+    return jsonResponse(
+      {
+        error:
+          'WAN endpoint is not set. Configure RUNPOD_WAN_T2V_ENDPOINT_URL for t2v or RUNPOD_WAN_RAPID_FASTMOVE_ENDPOINT_URL for i2v.',
+      },
+      500,
+      corsHeaders,
+    )
   }
   const isT2V = mode === 't2v'
+  const isAnimate = mode === 'animate'
+  const durationResult = isAnimate
+    ? { option: null as null | VideoDurationOption, error: null as string | null }
+    : resolveVideoDurationFromInput(input?.seconds)
+  if (!isAnimate && (durationResult.error || !durationResult.option)) {
+    return jsonResponse({ error: durationResult.error ?? 'Invalid seconds value.' }, 400, corsHeaders)
+  }
+  const videoDurationOption = durationResult.option ?? DEFAULT_VIDEO_DURATION_OPTION
   const imageValue = input?.image_base64 ?? input?.image ?? input?.image_url
   if (!isT2V && !imageValue) {
     return jsonResponse({ error: ERROR_I2V_IMAGE_REQUIRED }, 400, corsHeaders)
   }
+  const videoValue = input?.video_base64 ?? input?.video ?? input?.video_url
+  if (isAnimate && !videoValue) {
+    return jsonResponse({ error: ERROR_ANIMATE_VIDEO_REQUIRED }, 400, corsHeaders)
+  }
 
   let imageBase64 = ''
+  let videoBase64 = ''
   try {
     if (imageValue) {
       if (typeof input?.image_url === 'string' && input.image_url) {
@@ -640,9 +851,23 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       }
       imageBase64 = ensureBase64Input('image', imageValue)
     }
-  } catch (error) {
+  } catch {
     return jsonResponse(
       { error: ERROR_IMAGE_READ_FAILED },
+      400,
+      corsHeaders,
+    )
+  }
+  try {
+    if (videoValue) {
+      if (typeof input?.video_url === 'string' && input.video_url) {
+        throw new Error('video_url is not allowed. Use base64.')
+      }
+      videoBase64 = ensureBase64Input('video', videoValue, MAX_VIDEO_BYTES)
+    }
+  } catch {
+    return jsonResponse(
+      { error: ERROR_VIDEO_READ_FAILED },
       400,
       corsHeaders,
     )
@@ -650,6 +875,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   if (!isT2V && !imageBase64) {
     return jsonResponse({ error: 'image is empty.' }, 400, corsHeaders)
+  }
+  if (isAnimate && !videoBase64) {
+    return jsonResponse({ error: 'video is empty.' }, 400, corsHeaders)
   }
 
   if (!isT2V) {
@@ -668,13 +896,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   const prompt = String(input?.prompt ?? input?.text ?? '')
   const negativePrompt = String(input?.negative_prompt ?? input?.negative ?? '')
-  const steps = FIXED_STEPS
+  const steps = isAnimate ? FIXED_STEPS_ANIMATE : FIXED_STEPS
   const cfg = 1
   const width = Math.floor(Number(input?.width ?? 832))
   const height = Math.floor(Number(input?.height ?? 576))
   const fps = FIXED_FPS
-  const seconds = FIXED_SECONDS
-  const numFrames = FIXED_FRAMES
+  const numFrames = isAnimate
+    ? Math.max(1, Math.floor(Number(input?.num_frames ?? FIXED_ANIMATE_FRAMES)))
+    : videoDurationOption.frames
+  const seconds = isAnimate ? null : videoDurationOption.seconds
+  const ticketCost = isAnimate ? DEFAULT_VIDEO_TICKET_COST : videoDurationOption.ticketCost
   const seed = input?.randomize_seed
     ? Math.floor(Math.random() * 2147483647)
     : Number(input?.seed ?? 0)
@@ -713,20 +944,22 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     fps,
     steps: totalSteps,
     mode,
-    ticket_cost: VIDEO_TICKET_COST,
+    seconds,
+    ticket_cost: ticketCost,
   }
-  const ticketCheck = await ensureTicketAvailable(auth.admin, auth.user, VIDEO_TICKET_COST, corsHeaders)
+  const ticketCheck = await ensureTicketAvailable(auth.admin, auth.user, ticketCost, corsHeaders)
   if ('response' in ticketCheck) {
     return ticketCheck.response
   }
 
   const imageName = String(input?.image_name ?? 'input.png')
-  const workflow = clone(await getWorkflowTemplate(isT2V ? 't2v' : 'i2v'))
+  const videoName = String(input?.video_name ?? 'source.mp4')
+  const workflow = clone(await getWorkflowTemplate(generationMode))
   if (!workflow || Object.keys(workflow).length === 0) {
     return jsonResponse({ error: 'wan workflow is empty. Export a ComfyUI API workflow.' }, 500, corsHeaders)
   }
 
-  const nodeMap = await getNodeMap(isT2V ? 't2v' : 'i2v').catch(() => null)
+  const nodeMap = await getNodeMap(generationMode).catch(() => null)
   const hasNodeMap = nodeMap && Object.keys(nodeMap).length > 0
   if (!hasNodeMap) {
     return jsonResponse({ error: 'wan node map is empty.' }, 500, corsHeaders)
@@ -734,6 +967,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   const nodeValues: Record<string, unknown> = {
     image: imageBase64 ? imageName : undefined,
+    video: videoBase64 ? videoName : undefined,
     prompt,
     negative_prompt: negativePrompt,
     seed,
@@ -749,7 +983,10 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   applyNodeMap(workflow as Record<string, any>, nodeMap as NodeMap, nodeValues)
 
   const comfyKey = String(env.COMFY_ORG_API_KEY ?? '')
-  const images = imageBase64 ? [{ name: imageName, image: imageBase64 }] : []
+  const images = [
+    ...(imageBase64 ? [{ name: imageName, image: imageBase64 }] : []),
+    ...(videoBase64 ? [{ name: videoName, image: videoBase64 }] : []),
+  ]
   const runpodInput: Record<string, unknown> = {
     workflow,
     images,
@@ -787,7 +1024,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       status: upstreamPayload?.status ?? upstreamPayload?.state ?? null,
       source: 'run',
     }
-    const result = await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId, VIDEO_TICKET_COST, corsHeaders)
+    const result = await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId, ticketCost, corsHeaders)
     if ('response' in result) {
       return result.response
     }
@@ -804,7 +1041,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       status: upstreamPayload?.status ?? upstreamPayload?.state ?? null,
       source: 'run',
     }
-    const result = await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId, VIDEO_TICKET_COST, corsHeaders)
+    const result = await consumeTicket(auth.admin, auth.user, ticketMetaWithJob, usageId, ticketCost, corsHeaders)
     if ('response' in result) {
       return result.response
     }
@@ -824,5 +1061,3 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 }
-
-

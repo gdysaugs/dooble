@@ -3,9 +3,10 @@ type CorsEnv = {
 }
 
 const DEFAULT_ALLOWED_ORIGINS = [
-  'https://app.animone.cc',
-  'https://camcam2.pages.dev',
-  '*.camcam2.pages.dev',
+  'https://aidooble.org',
+  'https://www.aidooble.org',
+  'https://dooble.pages.dev',
+  '*.dooble.pages.dev',
 ]
 
 const normalize = (value: string) => value.trim().toLowerCase()

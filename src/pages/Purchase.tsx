@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { isAuthConfigured, supabase } from '../lib/supabaseClient'
 import { PURCHASE_PLANS } from '../lib/purchasePlans'
 import { TopNav } from '../components/TopNav'
 import './camera.css'
+import './purchase.css'
 
 const OAUTH_REDIRECT_URL =
   import.meta.env.VITE_SUPABASE_REDIRECT_URL ?? (typeof window !== 'undefined' ? window.location.origin : undefined)
+const DAILY_BONUS_COOLDOWN_HOURS = 12
+const DAILY_BONUS_AMOUNT = 1
 
 const formatRemaining = (targetIso: string | null) => {
   if (!targetIso) return ''
@@ -42,9 +45,17 @@ export function Purchase() {
   const [purchaseStatus, setPurchaseStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [purchaseMessage, setPurchaseMessage] = useState('')
   const [dailyClaimStatus, setDailyClaimStatus] = useState<string | null>(null)
+  const [dailyNextEligibleAt, setDailyNextEligibleAt] = useState<string | null>(null)
+  const [dailyCanClaim, setDailyCanClaim] = useState(false)
+  const [dailyCountdown, setDailyCountdown] = useState('')
+  const [isLoadingDailyStatus, setIsLoadingDailyStatus] = useState(false)
   const [isClaimingDaily, setIsClaimingDaily] = useState(false)
 
   const accessToken = session?.access_token ?? ''
+  const bestValuePlanId = useMemo(() => {
+    if (!PURCHASE_PLANS.length) return null
+    return [...PURCHASE_PLANS].sort((a, b) => a.price / a.tickets - b.price / b.tickets)[0]?.id ?? null
+  }, [])
 
   useEffect(() => {
     if (!supabase) return
@@ -101,10 +112,75 @@ export function Purchase() {
       setTicketCount(null)
       setTicketStatus('idle')
       setTicketMessage('')
+      setDailyCanClaim(false)
+      setDailyNextEligibleAt(null)
+      setDailyCountdown('')
       return
     }
     void fetchTickets(accessToken)
   }, [accessToken, fetchTickets, session])
+
+  const fetchDailyBonusStatus = useCallback(async (token: string) => {
+    if (!token) return
+    setIsLoadingDailyStatus(true)
+    try {
+      const res = await fetch('/api/daily-bonus', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setDailyCanClaim(false)
+        setDailyNextEligibleAt(null)
+        setDailyCountdown('')
+        return
+      }
+      const canClaim = Boolean(data?.can_claim)
+      const nextEligibleAt = data?.next_eligible_at ? String(data.next_eligible_at) : null
+      setDailyCanClaim(canClaim)
+      setDailyNextEligibleAt(nextEligibleAt)
+      if (!canClaim && nextEligibleAt) {
+        setDailyCountdown(formatRemaining(nextEligibleAt))
+      } else {
+        setDailyCountdown('')
+      }
+    } finally {
+      setIsLoadingDailyStatus(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!session || !accessToken) return
+    void fetchDailyBonusStatus(accessToken)
+  }, [accessToken, fetchDailyBonusStatus, session])
+
+  useEffect(() => {
+    if (!dailyNextEligibleAt || dailyCanClaim) {
+      setDailyCountdown('')
+      return
+    }
+    let didRefresh = false
+    const update = () => {
+      const remain = formatRemaining(dailyNextEligibleAt)
+      setDailyCountdown(remain)
+      if (!remain && !didRefresh && accessToken) {
+        didRefresh = true
+        void fetchDailyBonusStatus(accessToken)
+      }
+    }
+    update()
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [accessToken, dailyCanClaim, dailyNextEligibleAt, fetchDailyBonusStatus])
+
+  const dailyBonusHint = isLoadingDailyStatus
+    ? '次回まで確認中...'
+    : dailyCanClaim
+      ? '今すぐ受け取り可能'
+      : dailyCountdown
+        ? `次回まで ${dailyCountdown}`
+        : '次回までまもなく'
 
   const handleGoogleSignIn = async () => {
     if (!supabase || !isAuthConfigured) {
@@ -192,11 +268,15 @@ export function Purchase() {
       if (data?.granted) {
         setDailyClaimStatus('無料トークンを付与しました。')
         void fetchTickets(accessToken)
+        setDailyCanClaim(false)
+        setDailyNextEligibleAt(data?.next_eligible_at ? String(data.next_eligible_at) : null)
       } else {
         const reason = data?.reason
         if (reason === 'cooldown' || reason === 'not_eligible_yet') {
           const remain = formatRemaining(data?.next_eligible_at ?? null)
           setDailyClaimStatus(remain ? `次の受け取りまで ${remain}` : 'まだ受け取れません。')
+          setDailyCanClaim(false)
+          setDailyNextEligibleAt(data?.next_eligible_at ? String(data.next_eligible_at) : null)
         } else {
           setDailyClaimStatus('まだ受け取れません。')
         }
@@ -207,89 +287,149 @@ export function Purchase() {
       window.alert(message)
     } finally {
       setIsClaimingDaily(false)
+      void fetchDailyBonusStatus(accessToken)
     }
   }
 
   return (
-    <div className="camera-app purchase-app">
+    <div className="camera-app purchase-app purchase-page">
       <TopNav />
-      <div className="purchase-shell">
-        <section className="purchase-panel">
-          <div className="panel-header">
-            <div className="panel-title">
-              <h2>アカウント</h2>
-              <span>{session ? 'ログイン中' : 'ログインしてください。'}</span>
-            </div>
-            <div className="panel-auth">
+      <main className="token-lab">
+        <section className="token-hero">
+          <div className="token-hero__intro">
+            <p className="token-hero__eyebrow">TOKEN STATION</p>
+            <h1>トークン管理と購入</h1>
+            <p>制作ペースに合わせて補充。無料トークンは12時間ごとに1枚受け取れます。</p>
+          </div>
+          <div className="token-balance-card">
+            <span className="token-balance-card__label">現在の残高</span>
+            <strong>{session ? `${ticketCount ?? 0}` : '--'}</strong>
+            <small>{session ? 'tokens' : 'ログインで表示'}</small>
+          </div>
+        </section>
+
+        <section className="token-layout">
+          <article className="token-card token-card--account">
+            <div className="token-card__head">
+              <div>
+                <p className="token-card__kicker">Account</p>
+                <h2>アカウント</h2>
+              </div>
               {session ? (
-                <div className="auth-status">
-                  <span className="auth-email">{session.user?.email ?? 'ログイン中'}</span>
-                  <button type="button" className="ghost-button" onClick={handleSignOut}>
-                    ログアウト
-                  </button>
-                </div>
+                <span className="token-pill token-pill--online">ログイン中</span>
               ) : (
+                <span className="token-pill">ゲスト</span>
+              )}
+            </div>
+
+            {session ? (
+              <div className="token-auth-row">
+                <div className="token-user">
+                  <span className="token-user__label">Signed in as</span>
+                  <strong>{session.user?.email ?? 'ログイン中'}</strong>
+                </div>
+                <button type="button" className="token-button token-button--ghost" onClick={handleSignOut}>
+                  ログアウト
+                </button>
+              </div>
+            ) : (
+              <div className="token-auth-row">
+                <p className="token-auth-lead">購入と無料トークン受け取りにはログインが必要です。</p>
                 <button
                   type="button"
-                  className="ghost-button"
+                  className="token-button token-button--primary"
                   onClick={handleGoogleSignIn}
                   disabled={authStatus === 'loading'}
                 >
                   {authStatus === 'loading' ? '接続中...' : 'Googleで登録 / ログイン'}
                 </button>
-              )}
-            </div>
-          </div>
-          {authMessage && <div className="auth-message">{authMessage}</div>}
-          {session && (
-            <div className="ticket-message">
-              {ticketStatus === 'loading' && 'トークン確認中...'}
-              {ticketStatus !== 'loading' && `トークン残り: ${ticketCount ?? 0}`}
-              {ticketStatus === 'error' && ticketMessage ? ` / ${ticketMessage}` : ''}
-            </div>
-          )}
-          {session && (
-            <div className="daily-bonus">
-              <div className="daily-bonus__row">
-                <strong>無料トークン</strong>
-                <button type="button" className="ghost-button" onClick={handleClaimDaily} disabled={isClaimingDaily}>
-                  {isClaimingDaily ? '受け取り中...' : '受け取る'}
-                </button>
               </div>
-              {dailyClaimStatus && <span>{dailyClaimStatus}</span>}
-            </div>
-          )}
-        </section>
+            )}
 
-        <section className="purchase-panel">
-          <div className="panel-header">
-            <div className="panel-title">
-              <h2>トークン購入</h2>
-              <span>必要な分だけ購入。</span>
-            </div>
-          </div>
-          <div className="plan-grid">
-            {PURCHASE_PLANS.map((plan) => (
-              <div key={plan.id} className="plan-card">
-                <div>
-                  <div className="plan-label">{plan.label}</div>
-                  <div className="plan-tickets">{plan.tickets} トークン</div>
+            {authMessage && <p className="token-inline-message token-inline-message--error">{authMessage}</p>}
+
+            {session && (
+              <p className={`token-inline-message ${ticketStatus === 'error' ? 'token-inline-message--error' : ''}`}>
+                {ticketStatus === 'loading' && 'トークン確認中...'}
+                {ticketStatus !== 'loading' && `トークン残り: ${ticketCount ?? 0}`}
+                {ticketStatus === 'error' && ticketMessage ? ` / ${ticketMessage}` : ''}
+              </p>
+            )}
+
+            {session && (
+              <div className="token-bonus-card">
+                <div className="token-bonus-card__head">
+                  <div>
+                    <p className="token-card__kicker">Free Bonus</p>
+                    <h3>{`無料トークン（${DAILY_BONUS_COOLDOWN_HOURS}時間ごとに${DAILY_BONUS_AMOUNT}枚）`}</h3>
+                  </div>
+                  <span className={`token-bonus-state ${dailyCanClaim ? 'is-ready' : ''}`}>{dailyBonusHint}</span>
                 </div>
-                <div className="plan-price">¥{plan.price.toLocaleString()}</div>
-                <button
-                  type="button"
-                  className="plan-action"
-                  onClick={() => handleCheckout(plan.priceId)}
-                  disabled={!session || purchaseStatus === 'loading'}
-                >
-                  購入
-                </button>
+                <div className="token-bonus-card__actions">
+                  <button
+                    type="button"
+                    className="token-button token-button--primary"
+                    onClick={handleClaimDaily}
+                    disabled={isClaimingDaily || isLoadingDailyStatus || !dailyCanClaim}
+                  >
+                    {isClaimingDaily ? '受け取り中...' : isLoadingDailyStatus ? '確認中...' : dailyCanClaim ? '受け取る' : '待機中'}
+                  </button>
+                  {dailyClaimStatus && <span className="token-bonus-result">{dailyClaimStatus}</span>}
+                </div>
               </div>
-            ))}
-          </div>
-          {purchaseMessage && <div className="purchase-message">{purchaseMessage}</div>}
+            )}
+          </article>
+
+          <article className="token-card token-card--store">
+            <div className="token-card__head">
+              <div>
+                <p className="token-card__kicker">Store</p>
+                <h2>トークンプラン</h2>
+              </div>
+              <span className="token-pill">Stripe 決済</span>
+            </div>
+            <div className="token-plan-grid">
+              {PURCHASE_PLANS.map((plan) => {
+                const unitPrice = plan.price / plan.tickets
+                const unitPriceDisplay = unitPrice.toLocaleString('ja-JP', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })
+                const isBestValue = plan.id === bestValuePlanId
+                return (
+                  <div key={plan.id} className={`token-plan ${isBestValue ? 'is-featured' : ''}`}>
+                    <div className="token-plan__top">
+                      <div className="token-plan__name">{plan.label}</div>
+                      {isBestValue && <span className="token-plan__badge">BEST VALUE</span>}
+                    </div>
+                    <div className="token-plan__tokens">
+                      {plan.tickets}
+                      <small> tokens</small>
+                    </div>
+                    <div className="token-plan__price-row">
+                      <div className="token-plan__price">¥{plan.price.toLocaleString()}</div>
+                      <div className="token-plan__unit">{`1枚あたり約 ¥${unitPriceDisplay}`}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="token-button token-button--buy"
+                      onClick={() => handleCheckout(plan.priceId)}
+                      disabled={!session || purchaseStatus === 'loading'}
+                    >
+                      {purchaseStatus === 'loading' ? '処理中...' : 'このプランを購入'}
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+            {purchaseMessage && (
+              <p className={`token-inline-message ${purchaseStatus === 'error' ? 'token-inline-message--error' : ''}`}>
+                {purchaseMessage}
+              </p>
+            )}
+          </article>
         </section>
-      </div>
+      </main>
     </div>
   )
 }

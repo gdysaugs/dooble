@@ -1,4 +1,4 @@
-{
+﻿{
   "39": {
     "class_type": "VHS_VideoCombine",
     "inputs": {
@@ -6,7 +6,7 @@
         "11",
         0
       ],
-      "frame_rate": 16,
+      "frame_rate": 10,
       "loop_count": 0,
       "filename_prefix": "video\\wan\\aio\\mega_v10\\coffe_t2v",
       "format": "video/h264-mp4",
@@ -88,7 +88,7 @@
         "96",
         0
       ],
-      "length": 65
+      "length": 61
     }
   },
   "11": {

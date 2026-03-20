@@ -9,10 +9,12 @@ import {
 } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
-import { isAuthConfigured, supabase } from '../lib/supabaseClient'
+import { supabase } from '../lib/supabaseClient'
+import { buildPromptWithQualityTags } from '../lib/qualityPrompt'
+import { saveGeneratedAsset } from '../lib/downloadMedia'
 import { TopNav } from '../components/TopNav'
-import { GuestIntro } from '../components/GuestIntro'
 import './camera.css'
+import './video-studio.css'
 
 type RenderResult = {
   id: string
@@ -24,10 +26,8 @@ type RenderResult = {
 const API_ENDPOINT = '/api/qwen'
 const IMAGE_TICKET_COST = 1
 const FIXED_STEPS = 4
-const FIXED_CFG = 1
+const DEFAULT_CFG = 1
 const FIXED_ANGLE_STRENGTH = 0
-const OAUTH_REDIRECT_URL =
-  import.meta.env.VITE_SUPABASE_REDIRECT_URL ?? (typeof window !== 'undefined' ? window.location.origin : undefined)
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -56,31 +56,6 @@ const normalizeImage = (value: unknown, filename?: string) => {
   return `data:${mime};base64,${value}`
 }
 
-const base64ToBlob = (base64: string, mime: string) => {
-  const chunkSize = 0x8000
-  const byteChars = atob(base64)
-  const byteArrays: Uint8Array[] = []
-  for (let offset = 0; offset < byteChars.length; offset += chunkSize) {
-    const slice = byteChars.slice(offset, offset + chunkSize)
-    const byteNumbers = new Array(slice.length)
-    for (let i = 0; i < slice.length; i += 1) {
-      byteNumbers[i] = slice.charCodeAt(i)
-    }
-    byteArrays.push(new Uint8Array(byteNumbers))
-  }
-  return new Blob(byteArrays, { type: mime })
-}
-
-const dataUrlToBlob = (dataUrl: string, fallbackMime: string) => {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/)
-  if (!match) {
-    return base64ToBlob(dataUrl, fallbackMime)
-  }
-  const mime = match[1] || fallbackMime
-  const base64 = match[2] || ''
-  return base64ToBlob(base64, mime)
-}
-
 const extractErrorMessage = (payload: any) =>
   payload?.error ||
   payload?.message ||
@@ -90,7 +65,7 @@ const extractErrorMessage = (payload: any) =>
   payload?.result?.output?.error
 
 const normalizeErrorMessage = (value: unknown) => {
-  if (!value) return 'Request failed.'
+  if (!value) return 'リクエストに失敗しました。'
   if (typeof value === 'object') {
     const maybe = value as { error?: unknown; message?: unknown; detail?: unknown }
     const picked = maybe.error ?? maybe.message ?? maybe.detail
@@ -222,13 +197,14 @@ export function Image() {
   const [sourcePayload, setSourcePayload] = useState<string | null>(null)
   const [sourceName, setSourceName] = useState('')
   const [prompt, setPrompt] = useState('')
+  const [qualityTagsEnabled, setQualityTagsEnabled] = useState(false)
   const [negativePrompt, setNegativePrompt] = useState('')
+  const [cfg, setCfg] = useState(DEFAULT_CFG)
   const [width, setWidth] = useState(1024)
   const [height, setHeight] = useState(1024)
   const [result, setResult] = useState<RenderResult | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [isRunning, setIsRunning] = useState(false)
-  const [step, setStep] = useState(0)
   const [session, setSession] = useState<Session | null>(null)
   const [authReady, setAuthReady] = useState(!supabase)
   const [ticketCount, setTicketCount] = useState<number | null>(null)
@@ -236,20 +212,17 @@ export function Image() {
   const [ticketMessage, setTicketMessage] = useState('')
   const [showTicketModal, setShowTicketModal] = useState(false)
   const [errorModalMessage, setErrorModalMessage] = useState<string | null>(null)
+  const [isSavingResult, setIsSavingResult] = useState(false)
   const runIdRef = useRef(0)
   const navigate = useNavigate()
 
   const accessToken = session?.access_token ?? ''
-  const totalSteps = 4
-  const stepTitles = ['画像アップロード', 'プロンプト', 'ネガティブプロンプト', '生成'] as const
-  const canAdvanceImage = Boolean(sourcePayload)
-  const canAdvancePrompt = prompt.trim().length > 0
   const displayImage = result?.image ?? null
 
   const viewerStyle = useMemo(
     () =>
       ({
-        '--viewer-aspect': `${Math.max(1, width)} / ${Math.max(1, height)}`,
+        '--studio-aspect': `${Math.max(1, width)} / ${Math.max(1, height)}`,
         '--progress': result?.status === 'done' ? 1 : isRunning ? 0.5 : 0,
       }) as CSSProperties,
     [height, isRunning, result?.status, width],
@@ -326,14 +299,15 @@ export function Image() {
 
   const submitImage = useCallback(
     async (payload: string, token: string) => {
+      const finalPrompt = buildPromptWithQualityTags(prompt, qualityTagsEnabled)
       const input: Record<string, unknown> = {
-        prompt,
+        prompt: finalPrompt,
         negative_prompt: negativePrompt,
         image_base64: payload,
         width,
         height,
         steps: FIXED_STEPS,
-        cfg: FIXED_CFG,
+        cfg,
         seed: 0,
         randomize_seed: true,
         angle_strength: FIXED_ANGLE_STRENGTH,
@@ -369,7 +343,7 @@ export function Image() {
       if (!usageId) throw new Error('usage_id の取得に失敗しました。')
       return { jobId, usageId }
     },
-    [height, negativePrompt, prompt, width],
+    [cfg, height, negativePrompt, prompt, qualityTagsEnabled, width],
   )
 
   const pollJob = useCallback(async (jobId: string, usageId: string, runId: number, token?: string) => {
@@ -475,32 +449,12 @@ export function Image() {
     await startGenerate(sourcePayload)
   }
 
-  const handleGoogleSignIn = async () => {
-    if (!supabase || !isAuthConfigured) {
-      window.alert('認証設定が不足しています。')
-      return
-    }
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: OAUTH_REDIRECT_URL, skipBrowserRedirect: true },
-    })
-    if (error) {
-      window.alert(error.message)
-      return
-    }
-    if (data?.url) {
-      window.location.assign(data.url)
-      return
-    }
-    window.alert('OAuth URLの取得に失敗しました。')
-  }
-
   const clearImage = () => {
     setSourcePreview(null)
     setSourcePayload(null)
     setSourceName('')
+    setResult(null)
     setStatusMessage('')
-    setStep(0)
   }
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -524,212 +478,214 @@ export function Image() {
     reader.readAsDataURL(file)
   }
 
-  const handleDownload = useCallback(async () => {
-    if (!displayImage) return
-    const baseName = sourceName ? sourceName.replace(/\.[^.]+$/, '') : 'i2i-image'
-    const filename = `${baseName}-result.png`
+  const handleSaveResult = useCallback(async () => {
+    if (!displayImage || isSavingResult) return
+    setIsSavingResult(true)
     try {
-      let blob: Blob
-      if (displayImage.startsWith('data:')) {
-        blob = dataUrlToBlob(displayImage, 'image/png')
-      } else if (displayImage.startsWith('http') || displayImage.startsWith('blob:')) {
-        const response = await fetch(displayImage)
-        blob = await response.blob()
-      } else {
-        blob = base64ToBlob(displayImage, 'image/png')
-      }
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = filename
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    } catch {
-      window.location.assign(displayImage)
+      await saveGeneratedAsset({
+        source: displayImage,
+        filenamePrefix: 'doobleai-image',
+        fallbackExtension: 'png',
+      })
+    } finally {
+      setIsSavingResult(false)
     }
-  }, [displayImage, sourceName])
+  }, [displayImage, isSavingResult])
 
   if (!authReady) {
     return (
-      <div className="camera-app">
+      <div className="studio-page">
         <TopNav />
-        <div className="auth-boot" />
-      </div>
-    )
-  }
-
-  if (!session) {
-    return (
-      <div className="camera-app">
-        <TopNav />
-        <GuestIntro mode="image" onSignIn={handleGoogleSignIn} />
+        <div className="studio-loader">読み込み中...</div>
       </div>
     )
   }
 
   return (
-    <div className="camera-app">
+    <div className="studio-page">
       <TopNav />
-      <div className="wizard-shell">
-        <section className="wizard-panel wizard-panel--inputs">
-          <div className="wizard-card wizard-card--step">
-            <div className="wizard-stepper">
-              <div className="wizard-stepper__meta">
-                <span>{`ステップ ${step + 1} / ${totalSteps}`}</span>
-                <div className="wizard-dots">
-                  {Array.from({ length: totalSteps }).map((_, index) => (
-                    <span key={`i2i-step-${index}`} className={`wizard-dot${index <= step ? ' is-active' : ''}`} />
-                  ))}
-                </div>
+      <main className="studio-wrap">
+        <section className="studio-panel studio-panel--controls">
+          <header className="studio-heading">
+            <h1>画像から画像を生成</h1>
+            <p>参照画像とプロンプトでI2I生成を行います。</p>
+          </header>
+
+          <p className="studio-token-line">
+            Token:
+            <strong className="studio-token-value">
+              {session ? ticketCount ?? 0 : '--'}
+              <span className="studio-token-icon" aria-hidden="true">
+                👑
+              </span>
+            </strong>
+          </p>
+
+          {ticketStatus === 'error' && ticketMessage && <p className="studio-inline-error">{ticketMessage}</p>}
+
+          <section className="studio-section">
+            <h3 className="studio-section-title">素材</h3>
+            <label className="studio-upload">
+              <input type="file" accept="image/*" onChange={handleFileChange} />
+              <div className="studio-upload-inner">
+                <strong>{sourceName || '元画像をアップロード'}</strong>
+                <span>推奨: 1024x1024以内</span>
               </div>
-              <div className="wizard-status">
-                {ticketStatus === 'loading' && 'トークンを確認中...'}
-                {ticketStatus !== 'loading' && `トークン: ${ticketCount ?? 0}`}
-                {ticketStatus === 'error' && ticketMessage ? ` / ${ticketMessage}` : ''}
+            </label>
+
+            {sourcePreview && (
+              <div className="studio-thumb-wrap">
+                <img src={sourcePreview} alt="元画像プレビュー" className="studio-thumb" />
+                <button type="button" className="studio-thumb-remove" onClick={clearImage} aria-label="画像を削除">
+                  削除
+                </button>
               </div>
-              <h2>{stepTitles[step]}</h2>
+            )}
+          </section>
+
+          <section className="studio-section">
+            <h3 className="studio-section-title">編集指示</h3>
+            <label className="studio-field">
+              <span>プロンプト</span>
+              <textarea
+                rows={4}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="例: 髪の質感を上げて、背景をやわらかくぼかす"
+              />
+            </label>
+
+            <div className="studio-toggle-row">
+              <span>品質タグ(有効にすると高画質化タグを内部で埋め込みます)</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={qualityTagsEnabled}
+                className={`studio-switch${qualityTagsEnabled ? ' is-on' : ''}`}
+                onClick={() => setQualityTagsEnabled((prev) => !prev)}
+                aria-label="品質タグを有効化"
+              >
+                <span className="studio-switch-thumb" />
+              </button>
             </div>
 
-            {step === 0 && (
-              <div className="wizard-section">
-                <label className="upload-box">
-                  <input type="file" accept="image/*" onChange={handleFileChange} />
-                  <div>
-                    <strong>{sourceName || '画像をアップロード'}</strong>
-                    <span>画像から画像を生成する元画像を選択してください。</span>
-                  </div>
-                </label>
-                {sourcePreview && (
-                  <div className="preview-card">
-                    <button
-                      type="button"
-                      className="preview-card__remove"
-                      onClick={clearImage}
-                      aria-label="画像を削除"
-                    >
-                      x
-                    </button>
-                    <img src={sourcePreview} alt="元画像プレビュー" />
-                  </div>
-                )}
-              </div>
-            )}
+            <label className="studio-field">
+              <span>除外したい要素(任意)</span>
+              <textarea
+                rows={3}
+                value={negativePrompt}
+                onChange={(e) => setNegativePrompt(e.target.value)}
+                placeholder="低品質、ノイズ、破綻"
+              />
+            </label>
 
-            {step === 1 && (
-              <label className="wizard-field">
-                <span>プロンプト</span>
-                <textarea
-                  rows={4}
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  placeholder="例: 女性が笑顔で手を振る"
+            <label className="studio-field studio-field--compact">
+              <span>CFG</span>
+              <div className="studio-cfg-row">
+                <input
+                  type="range"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={cfg}
+                  onChange={(e) => {
+                    const next = Number(e.target.value)
+                    if (Number.isFinite(next)) {
+                      setCfg(Math.min(10, Math.max(0, next)))
+                    }
+                  }}
                 />
-              </label>
-            )}
-
-            {step === 2 && (
-              <label className="wizard-field">
-                <span>ネガティブプロンプト</span>
-                <textarea
-                  rows={3}
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                  placeholder="任意: 避けたい内容を入力。"
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={cfg}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    if (raw === '') {
+                      setCfg(0)
+                      return
+                    }
+                    const next = Number(raw)
+                    if (Number.isFinite(next)) {
+                      setCfg(Math.min(10, Math.max(0, next)))
+                    }
+                  }}
                 />
-              </label>
-            )}
-
-            {step === 3 && (
-              <div className="wizard-summary">
-                <div>
-                  <p>プロンプト</p>
-                  <strong>{prompt || '-'}</strong>
-                </div>
-                <div>
-                  <p>ネガティブプロンプト</p>
-                  <strong>{negativePrompt || '-'}</strong>
-                </div>
-                <div>
-                  <p>出力サイズ</p>
-                  <strong>{`${width} x ${height}`}</strong>
-                </div>
               </div>
-            )}
+              <small className="studio-field-note">値が高いほどプロンプトへの追従を強めます。</small>
+            </label>
+          </section>
 
-            <div className="wizard-actions">
-              {step > 0 && (
-                <button type="button" className="ghost-button" onClick={() => setStep((prev) => Math.max(prev - 1, 0))}>
-                  戻る
-                </button>
-              )}
-              {step === 0 && (
-                <button type="button" className="primary-button" onClick={() => setStep(1)} disabled={!canAdvanceImage}>
-                  次へ
-                </button>
-              )}
-              {step === 1 && (
-                <button type="button" className="primary-button" onClick={() => setStep(2)} disabled={!canAdvancePrompt}>
-                  次へ
-                </button>
-              )}
-              {step === 2 && (
-                <button type="button" className="primary-button" onClick={() => setStep(3)}>
-                  次へ
-                </button>
-              )}
-              {step === 3 && (
-                <button type="button" className="primary-button" onClick={handleGenerate} disabled={!sourcePayload || isRunning}>
-                  {isRunning ? '生成中...' : '生成'}
-                </button>
-              )}
+          <div className="studio-generate-dock">
+            <div className="studio-actions">
+              <button
+                type="button"
+                className="studio-btn studio-btn--primary"
+                onClick={handleGenerate}
+                disabled={!sourcePayload || isRunning || !session}
+              >
+                {isRunning ? '生成中...' : '画像を生成'}
+              </button>
             </div>
+            {statusMessage && <p className="studio-status">{statusMessage}</p>}
           </div>
         </section>
 
-        <section className="wizard-panel wizard-panel--preview">
-          <div className="wizard-card wizard-card--preview">
-            <div className="wizard-card__header">
-              <div>
-                <p className="wizard-eyebrow">プレビュー</p>
-                {statusMessage && !isRunning && <span>{statusMessage}</span>}
-              </div>
-              {displayImage && (
-                <button type="button" className="ghost-button" onClick={handleDownload}>
-                  保存
-                </button>
-              )}
-            </div>
-
-            <div className="stage-viewer" style={viewerStyle}>
-              <div className="viewer-progress" aria-hidden="true" />
-              {isRunning ? (
-                <div className="loading-display" role="status" aria-live="polite">
-                  <div className="loading-orb" aria-hidden="true" />
-                  <span className="loading-blink">生成中...</span>
-                </div>
-              ) : displayImage ? (
-                <img src={displayImage} alt="生成結果" />
-              ) : (
-                <div className="stage-placeholder">元画像とプロンプトを入力してください。</div>
-              )}
-            </div>
+        <section className="studio-panel studio-panel--preview">
+          <div className="studio-preview-head">
+            <h2>プレビュー</h2>
           </div>
+
+          <div className="studio-canvas" style={viewerStyle}>
+            <div className="viewer-progress" aria-hidden="true" />
+            {isRunning ? (
+              <div className="studio-loading" role="status" aria-live="polite">
+                <div className="studio-loading__halo" aria-hidden="true">
+                  <div className="studio-loading__core" />
+                  <div className="studio-spinner" />
+                </div>
+                <p className="studio-loading__title">画像を生成しています</p>
+                <p className="studio-loading__subtitle">モデル起動と描画処理を実行中です。しばらくお待ちください。</p>
+                <div className="studio-loading__steps" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            ) : displayImage ? (
+              <div className="studio-result-media">
+                <button
+                  type="button"
+                  className="studio-save-btn"
+                  onClick={handleSaveResult}
+                  disabled={isSavingResult}
+                >
+                  {isSavingResult ? 'Saving...' : 'Save'}
+                </button>
+                <img src={displayImage} alt="Generated image" />
+              </div>
+
+            ) : (
+              <div className="studio-empty">生成結果はここに表示されます。</div>
+            )}
+          </div>
+          {statusMessage && <p className="studio-status studio-status--preview">{statusMessage}</p>}
         </section>
-      </div>
+      </main>
 
       {showTicketModal && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal-card">
-            <h3>トークン不足</h3>
-            <p>画像生成は1トークン必要です。購入ページへ移動しますか？</p>
-            <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={() => setShowTicketModal(false)}>
+        <div className="studio-modal-overlay" role="dialog" aria-modal="true">
+          <div className="studio-modal-card">
+            <h3>チケット不足</h3>
+            <p>画像生成にはチケット1枚が必要です。購入ページで追加してください。</p>
+            <div className="studio-modal-actions">
+              <button type="button" className="studio-btn studio-btn--ghost" onClick={() => setShowTicketModal(false)}>
                 閉じる
               </button>
-              <button type="button" className="primary-button" onClick={() => navigate('/purchase')}>
-                購入する
+              <button type="button" className="studio-btn studio-btn--primary" onClick={() => navigate('/purchase')}>
+                購入ページへ
               </button>
             </div>
           </div>
@@ -737,13 +693,13 @@ export function Image() {
       )}
 
       {errorModalMessage && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal-card">
-            <h3>リクエストが拒否されました</h3>
+        <div className="studio-modal-overlay" role="dialog" aria-modal="true">
+          <div className="studio-modal-card">
+            <h3>エラー</h3>
             <p>{errorModalMessage}</p>
-            <div className="modal-actions">
-              <button type="button" className="primary-button" onClick={() => setErrorModalMessage(null)}>
-                閉じる
+            <div className="studio-modal-actions">
+              <button type="button" className="studio-btn studio-btn--primary" onClick={() => setErrorModalMessage(null)}>
+                OK
               </button>
             </div>
           </div>

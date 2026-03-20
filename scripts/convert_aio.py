@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 src = Path('/mnt/c/Users/adama/Downloads/rapid-aio-mega-gguf-example.json')
-dst = Path('/home/adama/src/camcam2/functions/api/wan-workflow.json')
+dst = Path('/home/adama/dooble/functions/api/wan-workflow.json')
 
 with src.open('r', encoding='utf-8') as f:
     data = json.load(f)
@@ -115,3 +115,4 @@ with dst.open('w', encoding='utf-8') as f:
 
 print('Wrote', dst)
 print('Negative prompt node id', neg_id)
+

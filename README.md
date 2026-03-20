@@ -1,57 +1,63 @@
-# XM Chat
+# dooble
 
-Simple chat site that uses:
-- Supabase (Google OAuth + message storage)
-- OpenAI API (via Cloudflare Pages Functions)
+AI video app (I2V / T2V / Animate) running on **Cloudflare Pages + Pages Functions**.
 
-## Setup
+Official URL: https://aidooble.org
 
-1) Install deps
-```
+## Architecture
+
+- Frontend: Vite (`dist`)
+- Backend API: `functions/api/*.ts` (Cloudflare Pages Functions)
+- Video generation: Runpod Serverless (called from Pages Functions)
+- Cloudflare Worker deploy: **not used**
+
+## Local Setup
+
+1. Install dependencies
+```bash
 npm install
 ```
 
-2) Env vars
-Create `.env` from `.env.example`:
-```
-VITE_SUPABASE_URL=...
-VITE_SUPABASE_ANON_KEY=...
-VITE_SUPABASE_REDIRECT_URL=https://your-domain
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-4o-mini
+2. Create local vars (`.dev.vars`)
+```env
+RUNPOD_API_KEY=...
+RUNPOD_WAN_ENDPOINT_URL=https://api.runpod.ai/v2/<endpoint-id>
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
-3) Supabase table
-```
-create table public.chat_messages (
-  id uuid not null default gen_random_uuid(),
-  user_id uuid not null,
-  character_id text not null,
-  role text not null,
-  content text not null,
-  created_at timestamp with time zone not null default now(),
-  constraint chat_messages_pkey primary key (id)
-);
-
-create index if not exists chat_messages_user_idx on public.chat_messages using btree (user_id);
-create index if not exists chat_messages_character_idx on public.chat_messages using btree (character_id);
-```
-
-4) Run locally
-```
+3. Run app
+```bash
 npm run dev
 ```
 
 ## Cloudflare Pages
 
 Build command:
-```
+```bash
 npm run build
 ```
 
-Output dir:
-```
+Output directory:
+```bash
 dist
 ```
 
-Set environment variables in Pages -> Settings -> Environment variables.
+Deploy example:
+```bash
+npx wrangler pages deploy dist --project-name dooble --branch main
+```
+
+## Required Pages Environment Variables
+
+- `RUNPOD_API_KEY`
+- `RUNPOD_WAN_ENDPOINT_URL`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+Optional:
+- `CORS_ALLOWED_ORIGINS`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_SUCCESS_URL`
+- `STRIPE_CANCEL_URL`

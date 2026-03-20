@@ -28,7 +28,7 @@ export function Account() {
         <div className="account-card">
           <h1>アカウント</h1>
           <p>ログインしてアカウントを表示してください。</p>
-          <a className="primary" href="/">
+          <a className="primary" href="/video">
             アプリに戻る
           </a>
         </div>

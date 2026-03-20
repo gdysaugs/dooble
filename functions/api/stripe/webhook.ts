@@ -4,13 +4,15 @@ type Env = {
   SUPABASE_URL?: string
   SUPABASE_SERVICE_ROLE_KEY?: string
   STRIPE_WEBHOOK_SECRET?: string
+  STRIPE_WEBHOOK_SIGNING_SECRET?: string
+  STRIPE_SIGNING_SECRET?: string
 }
 
-const ANIMONE_PRICE_IDS = new Set([
-  'price_1Sy5N6Abw0uHQjne0Q6aV0M1', // Starter
-  'price_1Sy5QbAbw0uHQjne0wydR1AG', // Basic
-  'price_1Sy5QqAbw0uHQjneTnEIOCFx', // Plus
-  'price_1Sy5R3Abw0uHQjnekmxX7Q5n', // Pro
+const DOOBLE_PRICE_MAP = new Map([
+  ['price_1TCz5nA9KcmC9XImyo6sNLGa', { label: 'Starter', tickets: 25 }],
+  ['price_1TCz67A9KcmC9XImBOK1rmiV', { label: 'Basic', tickets: 80 }],
+  ['price_1TCz6MA9KcmC9XImMNMlFeGO', { label: 'Plus', tickets: 220 }],
+  ['price_1TCz6iA9KcmC9XImkYYhJeQR', { label: 'Pro', tickets: 900 }],
 ])
 
 const corsHeaders = {
@@ -32,6 +34,15 @@ const getSupabaseAdmin = (env: Env) => {
   return createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   })
+}
+
+const resolveStripeWebhookSecret = (env: Env) => {
+  const candidates = [env.STRIPE_WEBHOOK_SECRET, env.STRIPE_WEBHOOK_SIGNING_SECRET, env.STRIPE_SIGNING_SECRET]
+  for (const value of candidates) {
+    const normalized = String(value ?? '').trim()
+    if (normalized) return normalized
+  }
+  return ''
 }
 
 const textEncoder = new TextEncoder()
@@ -72,7 +83,7 @@ const verifyStripeSignature = async (payload: string, signature: string, secret:
 export const onRequestOptions: PagesFunction = async () => new Response(null, { headers: corsHeaders })
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
-  const secret = env.STRIPE_WEBHOOK_SECRET
+  const secret = resolveStripeWebhookSecret(env)
   if (!secret) {
     return jsonResponse({ error: 'STRIPE_WEBHOOK_SECRET is not set.' }, 500)
   }
@@ -99,16 +110,17 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   const appTag = String(session.metadata?.app ?? '')
-  if (appTag !== 'animone') {
+  if (appTag !== 'dooble') {
     return jsonResponse({ received: true })
   }
 
   const priceId = String(session.metadata?.price_id ?? '')
-  if (!priceId || !ANIMONE_PRICE_IDS.has(priceId)) {
+  const plan = DOOBLE_PRICE_MAP.get(priceId)
+  if (!priceId || !plan) {
     return jsonResponse({ received: true })
   }
 
-  const tickets = Number(session.metadata?.tickets ?? 0)
+  const tickets = plan.tickets
   const email = String(session.metadata?.email ?? session.customer_details?.email ?? '')
   const userId = String(session.metadata?.user_id ?? session.client_reference_id ?? '')
   const usageId = String(event.id ?? session.id ?? '')
@@ -135,8 +147,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     p_amount: tickets,
     p_reason: 'stripe_purchase',
     p_metadata: {
-      price_id: session.metadata?.price_id ?? null,
-      plan_label: session.metadata?.plan_label ?? null,
+      price_id: priceId,
+      plan_label: plan.label,
+      metadata_tickets: session.metadata?.tickets ?? null,
       session_id: session.id ?? null,
     },
     p_stripe_customer_id: stripeCustomerId,
@@ -157,3 +170,4 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   return jsonResponse({ received: true })
 }
+

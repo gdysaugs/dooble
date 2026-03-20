@@ -5,6 +5,9 @@ type Env = {
   SUPABASE_URL?: string
   SUPABASE_SERVICE_ROLE_KEY?: string
   STRIPE_SECRET_KEY?: string
+  STRIPE_API_KEY?: string
+  STRIPE_LIVE_SECRET_KEY?: string
+  STRIPE_KEY?: string
   STRIPE_SUCCESS_URL?: string
   STRIPE_CANCEL_URL?: string
 }
@@ -16,6 +19,24 @@ const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
     status,
     headers: { ...headers, 'Content-Type': 'application/json' },
   })
+
+const parseJsonSafely = (text: string) => {
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+const resolveStripeSecretKey = (env: Env) => {
+  const candidates = [env.STRIPE_SECRET_KEY, env.STRIPE_API_KEY, env.STRIPE_LIVE_SECRET_KEY, env.STRIPE_KEY]
+  for (const value of candidates) {
+    const normalized = String(value ?? '').trim()
+    if (normalized) return normalized
+  }
+  return ''
+}
 
 const extractBearerToken = (request: Request) => {
   const header = request.headers.get('Authorization') || ''
@@ -60,10 +81,10 @@ const requireGoogleUser = async (request: Request, env: Env, corsHeaders: Header
 }
 
 const PRICE_MAP = new Map([
-  ['price_1Sy5N6Abw0uHQjne0Q6aV0M1', { label: 'Starter', tickets: 20 }],
-  ['price_1Sy5QbAbw0uHQjne0wydR1AG', { label: 'Basic', tickets: 80 }],
-  ['price_1Sy5QqAbw0uHQjneTnEIOCFx', { label: 'Plus', tickets: 200 }],
-  ['price_1Sy5R3Abw0uHQjnekmxX7Q5n', { label: 'Pro', tickets: 500 }],
+  ['price_1TCz5nA9KcmC9XImyo6sNLGa', { label: 'Starter', tickets: 25 }],
+  ['price_1TCz67A9KcmC9XImBOK1rmiV', { label: 'Basic', tickets: 80 }],
+  ['price_1TCz6MA9KcmC9XImMNMlFeGO', { label: 'Plus', tickets: 220 }],
+  ['price_1TCz6iA9KcmC9XImkYYhJeQR', { label: 'Pro', tickets: 900 }],
 ])
 
 const getRedirectUrl = (env: Env, request: Request, key: 'STRIPE_SUCCESS_URL' | 'STRIPE_CANCEL_URL', fallback: string) =>
@@ -88,9 +109,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return auth.response
   }
 
-  const stripeKey = env.STRIPE_SECRET_KEY
+  const stripeKey = resolveStripeSecretKey(env)
   if (!stripeKey) {
-    return jsonResponse({ error: 'STRIPE_SECRET_KEY is not set.' }, 500, corsHeaders)
+    return jsonResponse(
+      { error: 'Stripe秘密鍵が未設定です。STRIPE_SECRET_KEY（または STRIPE_API_KEY）を設定してください。' },
+      500,
+      corsHeaders,
+    )
   }
 
   const payload = await request.json().catch(() => null)
@@ -123,23 +148,35 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   params.set('metadata[tickets]', String(plan.tickets))
   params.set('metadata[price_id]', priceId)
   params.set('metadata[plan_label]', plan.label)
-  params.set('metadata[app]', 'animone')
-  params.set('payment_intent_data[statement_descriptor]', 'ANIMONE')
+  params.set('metadata[app]', 'dooble')
+  params.set('payment_intent_data[statement_descriptor]', 'AIDOOBLE')
 
-  const stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${stripeKey}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: params.toString(),
-  })
-
-  const stripeText = await stripeRes.text()
-  const stripeData = stripeText ? JSON.parse(stripeText) : null
-  if (!stripeRes.ok) {
-    return jsonResponse({ error: stripeData?.error?.message || 'Stripeのセッション作成に失敗しました。' }, 500, corsHeaders)
+  let stripeRes: Response
+  try {
+    stripeRes = await fetch('https://api.stripe.com/v1/checkout/sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    })
+  } catch {
+    return jsonResponse({ error: 'Stripe APIへの接続に失敗しました。' }, 502, corsHeaders)
   }
 
-  return jsonResponse({ url: stripeData?.url }, 200, corsHeaders)
+  const stripeText = await stripeRes.text()
+  const stripeData = parseJsonSafely(stripeText)
+  if (!stripeRes.ok) {
+    const stripeMessage =
+      (stripeData as any)?.error?.message ||
+      (typeof stripeText === 'string' && stripeText.trim() ? stripeText.trim().slice(0, 300) : '')
+    return jsonResponse({ error: stripeMessage || 'Stripeのセッション作成に失敗しました。' }, 500, corsHeaders)
+  }
+  const checkoutUrl = typeof (stripeData as any)?.url === 'string' ? (stripeData as any).url : ''
+  if (!checkoutUrl) {
+    return jsonResponse({ error: 'StripeセッションURLの取得に失敗しました。' }, 500, corsHeaders)
+  }
+
+  return jsonResponse({ url: checkoutUrl }, 200, corsHeaders)
 }
