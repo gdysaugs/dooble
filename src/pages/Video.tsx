@@ -21,9 +21,9 @@ const FIXED_STEPS = 4
 const FIXED_CFG = 1
 const FIXED_FPS = 10
 const VIDEO_LENGTH_OPTIONS = [
-  { seconds: 5, frames: 51, ticketCost: 1, label: '5秒（1トークン）' },
-  { seconds: 7, frames: 71, ticketCost: 3, label: '7秒（3トークン）' },
-  { seconds: 9, frames: 91, ticketCost: 5, label: '9秒（5トークン）' },
+  { seconds: 5, frames: 61, ticketCost: 1, label: '5秒（1トークン）' },
+  { seconds: 7, frames: 81, ticketCost: 3, label: '7秒（3トークン）' },
+  { seconds: 9, frames: 101, ticketCost: 5, label: '9秒（5トークン）' },
 ] as const
 const DEFAULT_VIDEO_LENGTH_SECONDS = VIDEO_LENGTH_OPTIONS[0].seconds
 const resolveVideoLengthOption = (seconds: number) =>
