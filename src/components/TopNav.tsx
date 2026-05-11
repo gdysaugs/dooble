@@ -111,6 +111,9 @@ export function TopNav() {
           <NavLink to="/purchase" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
             アカウント
           </NavLink>
+          <a className="top-nav__link" href="https://aidooble2.win/" target="_blank" rel="noreferrer">
+            DoobleAI2
+          </a>
         </nav>
       )}
     </header>
