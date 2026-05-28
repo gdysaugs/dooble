@@ -9,6 +9,7 @@ const OAUTH_REDIRECT_URL =
 export function TopNav() {
   const [session, setSession] = useState<Session | null>(null)
   const [isAuthReady, setIsAuthReady] = useState(!supabase)
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
 
   useEffect(() => {
     if (!supabase) {
@@ -84,12 +85,13 @@ export function TopNav() {
 
   const isLoggedIn = Boolean(session)
   const showGuestHeader = isAuthReady && !isLoggedIn
+  const closeMenu = () => setIsMenuOpen(false)
 
   return (
-    <header className={`top-nav${showGuestHeader ? ' top-nav--guest' : ''}`}>
+    <header className={`top-nav${showGuestHeader ? ' top-nav--guest' : ''}${isMenuOpen ? ' top-nav--menu-open' : ''}`}>
       <div className="top-nav__brand">
         <img className="top-nav__logo" src="/favicon.png" alt="" aria-hidden="true" />
-        <NavLink className="top-nav__title" to="/video">
+        <NavLink className="top-nav__title" to="/video" onClick={closeMenu}>
           DoobleAI
         </NavLink>
       </div>
@@ -101,20 +103,37 @@ export function TopNav() {
           </button>
         </div>
       ) : (
-        <nav className="top-nav__links">
-          <NavLink to="/video" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
+        <>
+        <button
+          type="button"
+          className="top-nav__toggle"
+          aria-label="メニュー"
+          aria-expanded={isMenuOpen}
+          aria-controls="top-nav-menu"
+          onClick={() => setIsMenuOpen((open) => !open)}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
+        <nav className="top-nav__links" id="top-nav-menu">
+          <NavLink to="/video" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`} onClick={closeMenu}>
             I2V
           </NavLink>
-          <NavLink to="/image" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
+          <NavLink to="/image" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`} onClick={closeMenu}>
             I2I
           </NavLink>
-          <NavLink to="/purchase" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`}>
+          <NavLink to="/purchase" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`} onClick={closeMenu}>
             アカウント
           </NavLink>
-          <a className="top-nav__link" href="https://aidooble2.win/" target="_blank" rel="noreferrer">
+          <a className="top-nav__link" href="https://aidooble2.win/" target="_blank" rel="noreferrer" onClick={closeMenu}>
             DoobleAI2
           </a>
+          <a className="top-nav__link" href="https://aidooble3.win/" target="_blank" rel="noreferrer" onClick={closeMenu}>
+            DoobleAI3
+          </a>
         </nav>
+        </>
       )}
     </header>
   )
