@@ -16,14 +16,14 @@ import { TopNav } from '../components/TopNav'
 import './camera.css'
 import './video-studio.css'
 
-const API_ENDPOINT = '/api/wan'
+const API_ENDPOINT = '/api/i2av-test'
 const FIXED_STEPS = 4
 const FIXED_CFG = 1
-const FIXED_FPS = 10
+const FIXED_FPS = 24
 const VIDEO_LENGTH_OPTIONS = [
-  { seconds: 5, frames: 53, ticketCost: 1, label: '5秒（1トークン）' },
-  { seconds: 7, frames: 73, ticketCost: 2, label: '7秒（2トークン）' },
-  { seconds: 10, frames: 103, ticketCost: 3, label: '10秒（3トークン）' },
+  { seconds: 5, frames: 121, ticketCost: 1, label: '5秒（1トークン）' },
+  { seconds: 7, frames: 169, ticketCost: 2, label: '7秒（2トークン）' },
+  { seconds: 10, frames: 241, ticketCost: 3, label: '10秒（3トークン）' },
 ] as const
 const DEFAULT_VIDEO_LENGTH_SECONDS = VIDEO_LENGTH_OPTIONS[0].seconds
 const resolveVideoLengthOption = (seconds: number) =>
@@ -153,7 +153,10 @@ const isFailureStatus = (status: string) => {
   return normalized.includes('fail') || normalized.includes('error') || normalized.includes('cancel')
 }
 
-const extractJobId = (payload: any) => payload?.id || payload?.jobId || payload?.job_id || payload?.output?.id
+const extractJobId = (payload: any) =>
+  payload?.id || payload?.jobId || payload?.job_id || payload?.output?.id || payload?.output?.job_id
+
+const extractUsageId = (payload: any) => payload?.usage_id || payload?.usageId || payload?.output?.usage_id
 
 const alignTo16 = (value: number) => Math.max(16, Math.round(value / 16) * 16)
 const PORTRAIT_MAX = { width: 576, height: 832 }
@@ -192,7 +195,7 @@ const buildPaddedDataUrl = (img: HTMLImageElement, targetWidth: number, targetHe
   return canvas.toDataURL('image/png')
 }
 
-export function Video() {
+export function I2AVTest() {
   const [sourcePreview, setSourcePreview] = useState<string | null>(null)
   const [sourcePayload, setSourcePayload] = useState<string | null>(null)
   const [sourceName, setSourceName] = useState('')
@@ -358,18 +361,19 @@ export function Video() {
       }
 
       const videos = extractVideoList(data)
+      const usageId = extractUsageId(data)
       if (videos.length) {
-        return { videos }
+        return { videos, usageId }
       }
 
       const jobId = extractJobId(data)
       if (!jobId) throw new Error('ジョブIDを取得できませんでした。')
-      return { jobId }
+      return { jobId, usageId }
     },
     [height, negativePrompt, prompt, qualityTagsEnabled, selectedVideoLength, sourceName, width],
   )
 
-  const pollJob = useCallback(async (jobId: string, runId: number, token?: string) => {
+  const pollJob = useCallback(async (jobId: string, usageId: string | undefined, runId: number, token?: string) => {
     for (let i = 0; i < 180; i += 1) {
       if (runIdRef.current !== runId) return { status: 'cancelled' as const, videos: [] }
 
@@ -383,6 +387,9 @@ export function Video() {
         mode: 'i2v',
         seconds: String(selectedVideoLength.seconds),
       })
+      if (usageId) {
+        params.set('usage_id', usageId)
+      }
       const res = await fetch(`${API_ENDPOINT}?${params.toString()}`, { headers })
       const data = await res.json().catch(() => ({}))
 
@@ -441,7 +448,7 @@ export function Video() {
         if ('videos' in submitted && submitted.videos.length) {
           setDisplayVideo(submitted.videos[0])
         } else if ('jobId' in submitted) {
-          const polled = await pollJob(submitted.jobId, runId, accessToken)
+          const polled = await pollJob(submitted.jobId, submitted.usageId, runId, accessToken)
           if (runIdRef.current !== runId) return
           if (polled.status === 'done' && polled.videos.length) {
             setDisplayVideo(polled.videos[0])
@@ -555,8 +562,8 @@ export function Video() {
       <main className="studio-wrap">
         <section className="studio-panel studio-panel--controls">
           <header className="studio-heading">
-            <h1>画像から動画を生成</h1>
-            <p>参照画像とプロンプトからi2v動画を作成します。</p>
+            <h1>音付きI2V</h1>
+            <p>画像とプロンプトから音声付き動画を生成します。</p>
           </header>
 
           <p className="studio-token-line">
@@ -571,7 +578,7 @@ export function Video() {
           <div className="studio-ticket-row">
             <span className="studio-ticket-label">今回の設定</span>
             <strong className="studio-ticket-value">{`${selectedVideoLength.seconds}秒`}</strong>
-            <span className="studio-ticket-cost">{`消費 ${requiredTickets}トークン`}</span>
+            <span className="studio-ticket-cost">{`音声付き / 消費 ${requiredTickets}トークン`}</span>
           </div>
 
           {ticketStatus === 'error' && ticketMessage && <p className="studio-inline-error">{ticketMessage}</p>}
