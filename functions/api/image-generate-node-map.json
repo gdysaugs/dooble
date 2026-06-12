@@ -1,0 +1,11 @@
+{
+  "prompt": { "id": "90", "input": "text" },
+  "negative_prompt": { "id": "91", "input": "text" },
+  "seed": { "id": "63", "input": "noise_seed" },
+  "steps": { "id": "63", "input": "steps" },
+  "cfg": { "id": "63", "input": "cfg" },
+  "width": { "id": "29", "input": "width" },
+  "height": { "id": "29", "input": "height" },
+  "batch_size": { "id": "29", "input": "batch_size" },
+  "filename_prefix": { "id": "106", "input": "filename_prefix" }
+}

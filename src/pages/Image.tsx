@@ -196,6 +196,9 @@ export function Image() {
   const [sourcePreview, setSourcePreview] = useState<string | null>(null)
   const [sourcePayload, setSourcePayload] = useState<string | null>(null)
   const [sourceName, setSourceName] = useState('')
+  const [referencePreview, setReferencePreview] = useState<string | null>(null)
+  const [referencePayload, setReferencePayload] = useState<string | null>(null)
+  const [referenceName, setReferenceName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [qualityTagsEnabled, setQualityTagsEnabled] = useState(false)
   const [negativePrompt, setNegativePrompt] = useState('')
@@ -304,6 +307,7 @@ export function Image() {
         prompt: finalPrompt,
         negative_prompt: negativePrompt,
         image_base64: payload,
+        image_name: sourceName || 'input.png',
         width,
         height,
         steps: FIXED_STEPS,
@@ -313,6 +317,10 @@ export function Image() {
         angle_strength: FIXED_ANGLE_STRENGTH,
         worker_mode: 'comfyui',
         mode: 'comfyui',
+      }
+      if (referencePayload) {
+        input.sub_image_base64 = referencePayload
+        input.sub_image_name = referenceName || 'reference.png'
       }
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (token) headers.Authorization = `Bearer ${token}`
@@ -343,7 +351,7 @@ export function Image() {
       if (!usageId) throw new Error('usage_id の取得に失敗しました。')
       return { jobId, usageId }
     },
-    [cfg, height, negativePrompt, prompt, qualityTagsEnabled, width],
+    [cfg, height, negativePrompt, prompt, qualityTagsEnabled, referenceName, referencePayload, sourceName, width],
   )
 
   const pollJob = useCallback(async (jobId: string, usageId: string, runId: number, token?: string) => {
@@ -457,6 +465,13 @@ export function Image() {
     setStatusMessage('')
   }
 
+  const clearReferenceImage = () => {
+    setReferencePreview(null)
+    setReferencePayload(null)
+    setReferenceName('')
+    setStatusMessage('')
+  }
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -474,6 +489,20 @@ export function Image() {
         setSourceName(file.name)
       }
       img.src = dataUrl
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleReferenceFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '')
+      setReferencePreview(dataUrl)
+      setReferencePayload(toBase64(dataUrl))
+      setReferenceName(file.name)
+      setStatusMessage('参考画像を読み込みました。')
     }
     reader.readAsDataURL(file)
   }
@@ -537,6 +566,28 @@ export function Image() {
               <div className="studio-thumb-wrap">
                 <img src={sourcePreview} alt="元画像プレビュー" className="studio-thumb" />
                 <button type="button" className="studio-thumb-remove" onClick={clearImage} aria-label="画像を削除">
+                  削除
+                </button>
+              </div>
+            )}
+
+            <label className="studio-upload">
+              <input type="file" accept="image/*" onChange={handleReferenceFileChange} />
+              <div className="studio-upload-inner">
+                <strong>{referenceName || '参考画像（任意）をアップロード'}</strong>
+                <span>顔や雰囲気など、追加で参照したい画像を選択できます</span>
+              </div>
+            </label>
+
+            {referencePreview && (
+              <div className="studio-thumb-wrap">
+                <img src={referencePreview} alt="参考画像プレビュー" className="studio-thumb" />
+                <button
+                  type="button"
+                  className="studio-thumb-remove"
+                  onClick={clearReferenceImage}
+                  aria-label="参考画像を削除"
+                >
                   削除
                 </button>
               </div>

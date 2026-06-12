@@ -3,7 +3,9 @@ import type { Session } from '@supabase/supabase-js'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { supabase } from './lib/supabaseClient'
 import { Account } from './pages/Account'
+import { I2AVTest } from './pages/I2AVTest'
 import { Image } from './pages/Image'
+import { ImageGenerate } from './pages/ImageGenerate'
 import { Purchase } from './pages/Purchase'
 import { Terms } from './pages/Terms'
 import { Tokushoho } from './pages/Tokushoho'
@@ -49,7 +51,9 @@ export function App() {
     <Routes>
       <Route path="/" element={<RedirectToVideoPreservingLocation />} />
       <Route path="/t2v" element={<Navigate to="/video" replace />} />
+      <Route path="/image-generate" element={<ImageGenerate />} />
       <Route path="/image" element={<Image />} />
+      <Route path="/i2av-test" element={<I2AVTest />} />
       <Route path="/purchase" element={<PurchaseRouteGate />} />
       <Route path="/video" element={<Video />} />
       <Route path="/account" element={<Account />} />

@@ -1,0 +1,140 @@
+{
+  "98": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "z image/pornmasterZImage_turboV35Fp8.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "99": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "z image/qwen_3_4b.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    }
+  },
+  "100": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "z image/ae.safetensors"
+    }
+  },
+  "84": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "98",
+        0
+      ],
+      "clip": [
+        "99",
+        0
+      ],
+      "lora_name": "mystic-xxx-zit-v4.safetensors",
+      "strength_model": 0.3,
+      "strength_clip": 0.3
+    }
+  },
+  "90": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": [
+        "84",
+        1
+      ]
+    }
+  },
+  "91": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": [
+        "84",
+        1
+      ]
+    }
+  },
+  "109": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "90",
+        0
+      ]
+    }
+  },
+  "110": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "84",
+        0
+      ],
+      "shift": 3
+    }
+  },
+  "29": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 832,
+      "height": 1216,
+      "batch_size": 1
+    }
+  },
+  "63": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": 1,
+      "control_after_generate": "randomize",
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 9994,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "110",
+        0
+      ],
+      "positive": [
+        "90",
+        0
+      ],
+      "negative": [
+        "91",
+        0
+      ],
+      "latent_image": [
+        "29",
+        0
+      ]
+    }
+  },
+  "30": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "63",
+        0
+      ],
+      "vae": [
+        "100",
+        0
+      ]
+    }
+  },
+  "106": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "30",
+        0
+      ],
+      "filename_prefix": "akuma-image-generate"
+    }
+  }
+}
