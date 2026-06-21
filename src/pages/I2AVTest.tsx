@@ -158,9 +158,11 @@ const extractJobId = (payload: any) =>
 
 const extractUsageId = (payload: any) => payload?.usage_id || payload?.usageId || payload?.output?.usage_id
 
-const alignTo16 = (value: number) => Math.max(16, Math.round(value / 16) * 16)
-const PORTRAIT_MAX = { width: 576, height: 832 }
-const LANDSCAPE_MAX = { width: 832, height: 576 }
+const LTX_DIMENSION_MULTIPLE = 32
+const alignToLtxMultiple = (value: number) =>
+  Math.max(LTX_DIMENSION_MULTIPLE, Math.round(value / LTX_DIMENSION_MULTIPLE) * LTX_DIMENSION_MULTIPLE)
+const PORTRAIT_MAX = { width: 448, height: 640 }
+const LANDSCAPE_MAX = { width: 640, height: 448 }
 
 const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHeight: number) => {
   const scale = Math.min(1, maxWidth / width, maxHeight / height)
@@ -169,13 +171,13 @@ const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHei
   const aspect = width / height
 
   if (aspect >= 1) {
-    const targetWidth = Math.min(maxWidth, alignTo16(scaledWidth))
-    const targetHeight = Math.min(maxHeight, alignTo16(targetWidth / aspect))
+    const targetWidth = Math.min(maxWidth, alignToLtxMultiple(scaledWidth))
+    const targetHeight = Math.min(maxHeight, alignToLtxMultiple(targetWidth / aspect))
     return { width: targetWidth, height: targetHeight }
   }
 
-  const targetHeight = Math.min(maxHeight, alignTo16(scaledHeight))
-  const targetWidth = Math.min(maxWidth, alignTo16(targetHeight * aspect))
+  const targetHeight = Math.min(maxHeight, alignToLtxMultiple(scaledHeight))
+  const targetWidth = Math.min(maxWidth, alignToLtxMultiple(targetHeight * aspect))
   return { width: targetWidth, height: targetHeight }
 }
 
@@ -203,8 +205,8 @@ export function I2AVTest() {
   const [qualityTagsEnabled, setQualityTagsEnabled] = useState(false)
   const [negativePrompt, setNegativePrompt] = useState('')
   const [videoLengthSeconds, setVideoLengthSeconds] = useState(DEFAULT_VIDEO_LENGTH_SECONDS)
-  const [width, setWidth] = useState(832)
-  const [height, setHeight] = useState(576)
+  const [width, setWidth] = useState(640)
+  const [height, setHeight] = useState(448)
   const [displayVideo, setDisplayVideo] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [isRunning, setIsRunning] = useState(false)

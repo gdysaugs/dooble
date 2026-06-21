@@ -21,8 +21,11 @@ const VIDEO_DURATION_OPTIONS = [
   { seconds: 10, ticketCost: 3 },
 ] as const
 const DEFAULT_SECONDS = VIDEO_DURATION_OPTIONS[0].seconds
-const DEFAULT_WIDTH = 768
-const DEFAULT_HEIGHT = 432
+const LTX_DIMENSION_MULTIPLE = 32
+const PORTRAIT_MAX = { width: 448, height: 640 }
+const LANDSCAPE_MAX = { width: 640, height: 448 }
+const DEFAULT_WIDTH = LANDSCAPE_MAX.width
+const DEFAULT_HEIGHT = LANDSCAPE_MAX.height
 const DEFAULT_FPS = 24
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_PROMPT_LENGTH = 1000
@@ -34,6 +37,8 @@ const PROMPT_SUFFIX =
   'consistent color grading, stable lighting, clean high quality video, smooth motion, stable camera'
 const DEFAULT_NEGATIVE_PROMPT =
   'still image, bad quality, subtitles, text, watermark, logo, blur, low quality, noise, artifacts, extra limbs, distorted anatomy, flicker, motion artifacts'
+const AUDIO_NEGATIVE_PROMPT =
+  'background noise, ambient sound, environmental sound, wind noise, street noise, room tone, crowd noise, nature sounds, water sound, rain sound, traffic noise, machinery noise, static noise, hiss, hum, buzz, echo, reverb, muffled audio, distorted audio, unwanted sound effect, music, background music, bgm'
 const INTERNAL_SERVER_ERROR_MESSAGE =
   'サーバー内部エラーが発生しました。時間をおいて再度お試しください。'
 const ERROR_LOGIN_REQUIRED = 'ログインが必要です。'
@@ -476,6 +481,32 @@ const parseOptionalNumber = (value: unknown, min: number, max: number) => {
   return rounded
 }
 
+const alignToLtxMultiple = (value: number) =>
+  Math.max(LTX_DIMENSION_MULTIPLE, Math.round(value / LTX_DIMENSION_MULTIPLE) * LTX_DIMENSION_MULTIPLE)
+
+const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHeight: number) => {
+  const scale = Math.min(1, maxWidth / width, maxHeight / height)
+  const scaledWidth = width * scale
+  const scaledHeight = height * scale
+  const aspect = width / height
+
+  if (aspect >= 1) {
+    const targetWidth = Math.min(maxWidth, alignToLtxMultiple(scaledWidth))
+    const targetHeight = Math.min(maxHeight, alignToLtxMultiple(targetWidth / aspect))
+    return { width: targetWidth, height: targetHeight }
+  }
+
+  const targetHeight = Math.min(maxHeight, alignToLtxMultiple(scaledHeight))
+  const targetWidth = Math.min(maxWidth, alignToLtxMultiple(targetHeight * aspect))
+  return { width: targetWidth, height: targetHeight }
+}
+
+const toSafeLtxDimensions = (width: number, height: number) => {
+  const isPortrait = height >= width
+  const bounds = isPortrait ? PORTRAIT_MAX : LANDSCAPE_MAX
+  return fitWithinBounds(width, height, bounds.width, bounds.height)
+}
+
 const normalizeSeed = (value: unknown) => {
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue) || numberValue < 0) return 0
@@ -504,19 +535,26 @@ const normalizeDistillLoraStrength = (value: unknown) => {
   return Math.max(0, Math.min(2, parsed))
 }
 
+const buildNegativePrompt = (negativePrompt: string) =>
+  [negativePrompt, DEFAULT_NEGATIVE_PROMPT, AUDIO_NEGATIVE_PROMPT]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(', ')
+
 const buildRunpodInput = (input: any, env: Env, imageBase64: string, imageName: string) => {
   const rawPrompt = String(input?.prompt ?? input?.text ?? '').trim()
   const negativePrompt = String(input?.negative_prompt ?? input?.negative ?? '').trim()
   const seconds = normalizeSeconds(input?.seconds ?? input?.duration)
   const fps = DEFAULT_FPS
-  const width = parseOptionalNumber(input?.width, 128, 2048) ?? DEFAULT_WIDTH
-  const height = parseOptionalNumber(input?.height, 128, 2048) ?? DEFAULT_HEIGHT
+  const requestedWidth = parseOptionalNumber(input?.width, 128, 2048) ?? DEFAULT_WIDTH
+  const requestedHeight = parseOptionalNumber(input?.height, 128, 2048) ?? DEFAULT_HEIGHT
+  const { width, height } = toSafeLtxDimensions(requestedWidth, requestedHeight)
   const distillLoraName = String(env.FOXAI_10EROS_DISTILL_LORA_NAME ?? DEFAULT_DISTILL_LORA_NAME).trim()
   const distillStrength = normalizeDistillLoraStrength(env.FOXAI_10EROS_DISTILL_LORA_STRENGTH)
   const runpodInput: Record<string, unknown> = {
     mode: 'i2v',
     prompt: appendPromptSuffix(rawPrompt),
-    negative_prompt: negativePrompt || DEFAULT_NEGATIVE_PROMPT,
+    negative_prompt: buildNegativePrompt(negativePrompt),
     seconds,
     fps,
     width,
