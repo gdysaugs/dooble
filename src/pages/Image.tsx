@@ -180,7 +180,10 @@ const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHei
   return { width: targetWidth, height: targetHeight }
 }
 
-const getTargetSize = (width: number, height: number) => fitWithinBounds(width, height, 1024, 1024)
+const EDIT_MAX_DIMENSION = 768
+
+const getTargetSize = (width: number, height: number) =>
+  fitWithinBounds(width, height, EDIT_MAX_DIMENSION, EDIT_MAX_DIMENSION)
 
 const buildPaddedDataUrl = (img: HTMLImageElement, targetWidth: number, targetHeight: number) => {
   const canvas = document.createElement('canvas')
@@ -203,8 +206,8 @@ export function Image() {
   const [qualityTagsEnabled, setQualityTagsEnabled] = useState(false)
   const [negativePrompt, setNegativePrompt] = useState('')
   const [cfg, setCfg] = useState(DEFAULT_CFG)
-  const [width, setWidth] = useState(1024)
-  const [height, setHeight] = useState(1024)
+  const [width, setWidth] = useState(EDIT_MAX_DIMENSION)
+  const [height, setHeight] = useState(EDIT_MAX_DIMENSION)
   const [result, setResult] = useState<RenderResult | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [isRunning, setIsRunning] = useState(false)
@@ -558,7 +561,7 @@ export function Image() {
               <input type="file" accept="image/*" onChange={handleFileChange} />
               <div className="studio-upload-inner">
                 <strong>{sourceName || '元画像をアップロード'}</strong>
-                <span>推奨: 1024x1024以内</span>
+                <span>推奨: 長辺768px以内</span>
               </div>
             </label>
 
