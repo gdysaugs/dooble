@@ -123,9 +123,6 @@ export function TopNav() {
           <NavLink to="/i2av-test" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`} onClick={closeMenu}>
             音付きI2V
           </NavLink>
-          <NavLink to="/image-generate" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`} onClick={closeMenu}>
-            画像生成
-          </NavLink>
           <NavLink to="/image" className={({ isActive }) => `top-nav__link${isActive ? ' is-active' : ''}`} onClick={closeMenu}>
             I2I
           </NavLink>

@@ -75,6 +75,7 @@ const ERROR_JOB_NOT_FOUND = 'Job not found.'
 const ERROR_PROMPT_REQUIRED = 'Prompt is required.'
 const ERROR_PROMPT_TOO_LONG = 'Prompt is too long.'
 const ERROR_NEGATIVE_PROMPT_TOO_LONG = 'Negative prompt is too long.'
+const ERROR_IMAGE_GENERATE_DISABLED = 'Image generation is no longer available.'
 const HIDDEN_MODEL_NAME_PATTERN =
   /z[-_\s]?image|pornmasterZImage_turboV35Fp8|qwen_3_4b|mystic-xxx-zit-v4|[a-z]+-z-image-basic/gi
 const HIDDEN_MODEL_FILE_PATTERN = /[A-Za-z0-9_./%\\\-\s]+?\.(safetensors|gguf|onnx|pt|pth|ckpt|bin)/gi
@@ -445,6 +446,7 @@ export const onRequestOptions: PagesFunction<Env> = async ({ request, env }) => 
 export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
   const corsHeaders = buildCorsHeaders(request, env, corsMethods)
   if (isCorsBlocked(request, env)) return new Response(null, { status: 403, headers: corsHeaders })
+  return jsonResponse({ error: ERROR_IMAGE_GENERATE_DISABLED }, 410, corsHeaders)
 
   const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) return auth.response
@@ -510,6 +512,7 @@ export const onRequestGet: PagesFunction<Env> = async ({ request, env }) => {
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const corsHeaders = buildCorsHeaders(request, env, corsMethods)
   if (isCorsBlocked(request, env)) return new Response(null, { status: 403, headers: corsHeaders })
+  return jsonResponse({ error: ERROR_IMAGE_GENERATE_DISABLED }, 410, corsHeaders)
 
   const auth = await requireGoogleUser(request, env, corsHeaders)
   if ('response' in auth) return auth.response
