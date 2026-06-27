@@ -180,7 +180,7 @@ const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHei
   return { width: targetWidth, height: targetHeight }
 }
 
-const EDIT_MAX_DIMENSION = 768
+const EDIT_MAX_DIMENSION = 1024
 
 const getTargetSize = (width: number, height: number) =>
   fitWithinBounds(width, height, EDIT_MAX_DIMENSION, EDIT_MAX_DIMENSION)
@@ -561,7 +561,7 @@ export function Image() {
               <input type="file" accept="image/*" onChange={handleFileChange} />
               <div className="studio-upload-inner">
                 <strong>{sourceName || '元画像をアップロード'}</strong>
-                <span>推奨: 長辺768px以内</span>
+                <span>推奨: 長辺1024px以内</span>
               </div>
             </label>
 

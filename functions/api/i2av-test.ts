@@ -22,8 +22,8 @@ const VIDEO_DURATION_OPTIONS = [
 ] as const
 const DEFAULT_SECONDS = VIDEO_DURATION_OPTIONS[0].seconds
 const LTX_DIMENSION_MULTIPLE = 32
-const PORTRAIT_MAX = { width: 448, height: 640 }
-const LANDSCAPE_MAX = { width: 640, height: 448 }
+const PORTRAIT_MAX = { width: 512, height: 720 }
+const LANDSCAPE_MAX = { width: 720, height: 512 }
 const DEFAULT_WIDTH = LANDSCAPE_MAX.width
 const DEFAULT_HEIGHT = LANDSCAPE_MAX.height
 const DEFAULT_FPS = 24

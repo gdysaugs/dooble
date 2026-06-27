@@ -161,8 +161,8 @@ const extractUsageId = (payload: any) => payload?.usage_id || payload?.usageId |
 const LTX_DIMENSION_MULTIPLE = 32
 const alignToLtxMultiple = (value: number) =>
   Math.max(LTX_DIMENSION_MULTIPLE, Math.round(value / LTX_DIMENSION_MULTIPLE) * LTX_DIMENSION_MULTIPLE)
-const PORTRAIT_MAX = { width: 448, height: 640 }
-const LANDSCAPE_MAX = { width: 640, height: 448 }
+const PORTRAIT_MAX = { width: 512, height: 720 }
+const LANDSCAPE_MAX = { width: 720, height: 512 }
 
 const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHeight: number) => {
   const scale = Math.min(1, maxWidth / width, maxHeight / height)
@@ -205,8 +205,8 @@ export function I2AVTest() {
   const [qualityTagsEnabled, setQualityTagsEnabled] = useState(false)
   const [negativePrompt, setNegativePrompt] = useState('')
   const [videoLengthSeconds, setVideoLengthSeconds] = useState(DEFAULT_VIDEO_LENGTH_SECONDS)
-  const [width, setWidth] = useState(640)
-  const [height, setHeight] = useState(448)
+  const [width, setWidth] = useState(LANDSCAPE_MAX.width)
+  const [height, setHeight] = useState(LANDSCAPE_MAX.height)
   const [displayVideo, setDisplayVideo] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [isRunning, setIsRunning] = useState(false)
@@ -591,7 +591,7 @@ export function I2AVTest() {
               <input type="file" accept="image/*" onChange={handleFileChange} />
               <div className="studio-upload-inner">
                 <strong>{sourceName || '元画像をアップロード'}</strong>
-                <span>推奨: 縦832x576以内、横576x832以内</span>
+                <span>推奨: 横720x512以内、縦512x720以内</span>
               </div>
             </label>
             {sourcePreview && (
