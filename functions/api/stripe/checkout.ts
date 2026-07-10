@@ -81,10 +81,10 @@ const requireGoogleUser = async (request: Request, env: Env, corsHeaders: Header
 }
 
 const PRICE_MAP = new Map([
-  ['price_1TCz5nA9KcmC9XImyo6sNLGa', { label: 'Starter', tickets: 25 }],
-  ['price_1TCz67A9KcmC9XImBOK1rmiV', { label: 'Basic', tickets: 80 }],
-  ['price_1TCz6MA9KcmC9XImMNMlFeGO', { label: 'Plus', tickets: 220 }],
-  ['price_1TCz6iA9KcmC9XImkYYhJeQR', { label: 'Pro', tickets: 900 }],
+  ['price_1TrRv7AUadrnZpOslSkWfdPT', { label: 'Starter', tickets: 25 }],
+  ['price_1TrRvKAUadrnZpOsCpXlBTfC', { label: 'Basic', tickets: 80 }],
+  ['price_1TrRvZAUadrnZpOsyZrZgjhz', { label: 'Plus', tickets: 220 }],
+  ['price_1TrRvnAUadrnZpOsfDD4gk2V', { label: 'Pro', tickets: 900 }],
 ])
 
 const getRedirectUrl = (env: Env, request: Request, key: 'STRIPE_SUCCESS_URL' | 'STRIPE_CANCEL_URL', fallback: string) =>
