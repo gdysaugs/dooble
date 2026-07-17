@@ -11,7 +11,11 @@ import { useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabaseClient'
 import { buildPromptWithQualityTags } from '../lib/qualityPrompt'
-import { saveGeneratedAsset } from '../lib/downloadMedia'
+import {
+  prepareGeneratedAsset,
+  saveGeneratedAsset,
+  type PreparedGeneratedAsset,
+} from '../lib/downloadMedia'
 import { TopNav } from '../components/TopNav'
 import './camera.css'
 import './video-studio.css'
@@ -19,7 +23,7 @@ import './video-studio.css'
 type RenderResult = {
   id: string
   status: 'queued' | 'running' | 'done' | 'error'
-  image?: string
+  image?: PreparedGeneratedAsset
   error?: string
 }
 
@@ -220,6 +224,7 @@ export function Image() {
   const [errorModalMessage, setErrorModalMessage] = useState<string | null>(null)
   const [isSavingResult, setIsSavingResult] = useState(false)
   const runIdRef = useRef(0)
+  const resultAssetRef = useRef<PreparedGeneratedAsset | null>(null)
   const navigate = useNavigate()
 
   const accessToken = session?.access_token ?? ''
@@ -233,6 +238,19 @@ export function Image() {
       }) as CSSProperties,
     [height, isRunning, result?.status, width],
   )
+
+  const replaceResult = useCallback((next: RenderResult | null) => {
+    const nextAsset = next?.image ?? null
+    const previous = resultAssetRef.current
+    if (previous && previous !== nextAsset) previous.release()
+    resultAssetRef.current = nextAsset
+    setResult(next)
+  }, [])
+
+  useEffect(() => () => {
+    resultAssetRef.current?.release()
+    resultAssetRef.current = null
+  }, [])
 
   useEffect(() => {
     if (!supabase) {
@@ -398,13 +416,21 @@ export function Image() {
       runIdRef.current = runId
       setIsRunning(true)
       setStatusMessage('')
-      setResult({ id: makeId(), status: 'running' })
+      replaceResult({ id: makeId(), status: 'running' })
 
       try {
         const submitted = await submitImage(payload, accessToken)
         if (runIdRef.current !== runId) return
         if ('images' in submitted && submitted.images.length) {
-          setResult({ id: makeId(), status: 'done', image: submitted.images[0] })
+          const preparedImage = await prepareGeneratedAsset({
+            source: submitted.images[0],
+            fallbackExtension: 'png',
+          })
+          if (runIdRef.current !== runId) {
+            preparedImage.release()
+            return
+          }
+          replaceResult({ id: makeId(), status: 'done', image: preparedImage })
           setStatusMessage('完了')
           if (accessToken) void fetchTickets(accessToken)
           return
@@ -412,17 +438,25 @@ export function Image() {
         const polled = await pollJob(submitted.jobId, submitted.usageId, runId, accessToken)
         if (runIdRef.current !== runId) return
         if (polled.status === 'done' && polled.images.length) {
-          setResult({ id: makeId(), status: 'done', image: polled.images[0] })
+          const preparedImage = await prepareGeneratedAsset({
+            source: polled.images[0],
+            fallbackExtension: 'png',
+          })
+          if (runIdRef.current !== runId) {
+            preparedImage.release()
+            return
+          }
+          replaceResult({ id: makeId(), status: 'done', image: preparedImage })
           setStatusMessage('完了')
           if (accessToken) void fetchTickets(accessToken)
         }
       } catch (error) {
         const message = normalizeErrorMessage(error instanceof Error ? error.message : error)
         if (message === 'TICKET_SHORTAGE') {
-          setResult({ id: makeId(), status: 'error', error: 'トークン不足' })
+          replaceResult({ id: makeId(), status: 'error', error: 'トークン不足' })
           setStatusMessage('トークン不足')
         } else {
-          setResult({ id: makeId(), status: 'error', error: message })
+          replaceResult({ id: makeId(), status: 'error', error: message })
           setStatusMessage(message)
           setErrorModalMessage(message)
         }
@@ -430,7 +464,7 @@ export function Image() {
         if (runIdRef.current === runId) setIsRunning(false)
       }
     },
-    [accessToken, fetchTickets, pollJob, submitImage],
+    [accessToken, fetchTickets, pollJob, replaceResult, submitImage],
   )
 
   const handleGenerate = async () => {
@@ -464,7 +498,7 @@ export function Image() {
     setSourcePreview(null)
     setSourcePayload(null)
     setSourceName('')
-    setResult(null)
+    replaceResult(null)
     setStatusMessage('')
   }
 
@@ -515,9 +549,9 @@ export function Image() {
     setIsSavingResult(true)
     try {
       await saveGeneratedAsset({
-        source: displayImage,
+        source: displayImage.url,
         filenamePrefix: 'doobleai-image',
-        fallbackExtension: 'png',
+        fallbackExtension: displayImage.extension || 'png',
       })
     } finally {
       setIsSavingResult(false)
@@ -718,7 +752,7 @@ export function Image() {
                 >
                   {isSavingResult ? 'Saving...' : 'Save'}
                 </button>
-                <img src={displayImage} alt="Generated image" />
+                <img src={displayImage.url} alt="Generated image" />
               </div>
 
             ) : (

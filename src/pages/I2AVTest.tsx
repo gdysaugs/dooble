@@ -11,7 +11,11 @@ import { Link, useNavigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabaseClient'
 import { buildPromptWithQualityTags } from '../lib/qualityPrompt'
-import { saveGeneratedAsset } from '../lib/downloadMedia'
+import {
+  prepareGeneratedAsset,
+  saveGeneratedAsset,
+  type PreparedGeneratedAsset,
+} from '../lib/downloadMedia'
 import { TopNav } from '../components/TopNav'
 import './camera.css'
 import './video-studio.css'
@@ -207,7 +211,7 @@ export function I2AVTest() {
   const [videoLengthSeconds, setVideoLengthSeconds] = useState(DEFAULT_VIDEO_LENGTH_SECONDS)
   const [width, setWidth] = useState(LANDSCAPE_MAX.width)
   const [height, setHeight] = useState(LANDSCAPE_MAX.height)
-  const [displayVideo, setDisplayVideo] = useState<string | null>(null)
+  const [displayVideo, setDisplayVideo] = useState<PreparedGeneratedAsset | null>(null)
   const [statusMessage, setStatusMessage] = useState('')
   const [isRunning, setIsRunning] = useState(false)
   const [session, setSession] = useState<Session | null>(null)
@@ -219,13 +223,14 @@ export function I2AVTest() {
   const [errorModalMessage, setErrorModalMessage] = useState<string | null>(null)
   const [isSavingResult, setIsSavingResult] = useState(false)
   const runIdRef = useRef(0)
+  const displayVideoRef = useRef<PreparedGeneratedAsset | null>(null)
   const navigate = useNavigate()
 
   const accessToken = session?.access_token ?? ''
   const selectedVideoLength = useMemo(() => resolveVideoLengthOption(videoLengthSeconds), [videoLengthSeconds])
   const requiredTickets = selectedVideoLength.ticketCost
   const canGenerate = Boolean(sourcePayload && !isRunning && session)
-  const isGif = displayVideo?.startsWith('data:image/gif')
+  const isGif = displayVideo?.extension === 'gif'
   const showGuestPromo = !session && !isRunning && !displayVideo
 
   const viewerStyle = useMemo(
@@ -235,6 +240,18 @@ export function I2AVTest() {
       }) as CSSProperties,
     [height, width],
   )
+
+  const replaceDisplayVideo = useCallback((next: PreparedGeneratedAsset | null) => {
+    const previous = displayVideoRef.current
+    if (previous && previous !== next) previous.release()
+    displayVideoRef.current = next
+    setDisplayVideo(next)
+  }, [])
+
+  useEffect(() => () => {
+    displayVideoRef.current?.release()
+    displayVideoRef.current = null
+  }, [])
 
   useEffect(() => {
     if (!supabase) {
@@ -441,21 +458,33 @@ export function I2AVTest() {
       runIdRef.current = runId
       setIsRunning(true)
       setStatusMessage('')
-      setDisplayVideo(null)
+      replaceDisplayVideo(null)
 
       try {
+        let videoSource: string | null = null
         const submitted = await submitVideo(imagePayload, accessToken)
         if (runIdRef.current !== runId) return
 
         if ('videos' in submitted && submitted.videos.length) {
-          setDisplayVideo(submitted.videos[0])
+          videoSource = submitted.videos[0]
         } else if ('jobId' in submitted) {
           const polled = await pollJob(submitted.jobId, submitted.usageId, runId, accessToken)
           if (runIdRef.current !== runId) return
           if (polled.status === 'done' && polled.videos.length) {
-            setDisplayVideo(polled.videos[0])
+            videoSource = polled.videos[0]
           }
         }
+
+        if (!videoSource) throw new Error('動画生成結果を取得できませんでした。')
+        const preparedVideo = await prepareGeneratedAsset({
+          source: videoSource,
+          fallbackExtension: 'mp4',
+        })
+        if (runIdRef.current !== runId) {
+          preparedVideo.release()
+          return
+        }
+        replaceDisplayVideo(preparedVideo)
 
         if (accessToken) {
           await fetchTickets(accessToken)
@@ -472,16 +501,16 @@ export function I2AVTest() {
         }
       }
     },
-    [accessToken, fetchTickets, pollJob, session, submitVideo],
+    [accessToken, fetchTickets, pollJob, replaceDisplayVideo, session, submitVideo],
   )
 
   const clearImage = useCallback(() => {
     setSourcePreview(null)
     setSourcePayload(null)
     setSourceName('')
-    setDisplayVideo(null)
+    replaceDisplayVideo(null)
     setStatusMessage('')
-  }, [])
+  }, [replaceDisplayVideo])
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -540,9 +569,9 @@ export function I2AVTest() {
     setIsSavingResult(true)
     try {
       await saveGeneratedAsset({
-        source: displayVideo,
+        source: displayVideo.url,
         filenamePrefix: 'doobleai-video',
-        fallbackExtension: isGif ? 'gif' : 'mp4',
+        fallbackExtension: displayVideo.extension || (isGif ? 'gif' : 'mp4'),
       })
     } finally {
       setIsSavingResult(false)
@@ -705,7 +734,11 @@ export function I2AVTest() {
                 >
                   {isSavingResult ? 'Saving...' : 'Save'}
                 </button>
-                {isGif ? <img src={displayVideo} alt="Generated video" /> : <video controls src={displayVideo} />}
+                {isGif ? (
+                  <img src={displayVideo.url} alt="Generated video" />
+                ) : (
+                  <video controls src={displayVideo.url} />
+                )}
               </div>
 
             ) : showGuestPromo ? (
