@@ -1,19 +1,17 @@
+import workflowTemplate from './10eros-i2v-workflow.json'
 import { createClient, type User } from '@supabase/supabase-js'
 import { buildCorsHeaders, isCorsBlocked } from '../_shared/cors'
 
 type Env = {
   RUNPOD_I2AV_TEST_API_KEY?: string
   RUNPOD_API_KEY?: string
-  RUNPOD_I2AV_TEST_ENDPOINT_URL?: string
-  COMFY_ORG_API_KEY?: string
   SUPABASE_URL?: string
   SUPABASE_SERVICE_ROLE_KEY?: string
-  FOXAI_10EROS_DISTILL_LORA_NAME?: string
-  FOXAI_10EROS_DISTILL_LORA_STRENGTH?: string
 }
 
 const corsMethods = 'POST, GET, OPTIONS'
-const DEFAULT_RUNPOD_ENDPOINT = 'https://api.runpod.ai/v2/bogw8zz9d31j4d'
+const RUNPOD_10EROS_ENDPOINT = 'https://api.runpod.ai/v2/11ekn1yxyhfhy4'
+const WORKFLOW_INPUT_IMAGE_NAME = 'input.png'
 const SIGNUP_TICKET_GRANT = 3
 const VIDEO_DURATION_OPTIONS = [
   { seconds: 5, ticketCost: 1 },
@@ -21,24 +19,38 @@ const VIDEO_DURATION_OPTIONS = [
   { seconds: 10, ticketCost: 3 },
 ] as const
 const DEFAULT_SECONDS = VIDEO_DURATION_OPTIONS[0].seconds
-const LTX_DIMENSION_MULTIPLE = 32
-const PORTRAIT_MAX = { width: 512, height: 720 }
-const LANDSCAPE_MAX = { width: 720, height: 512 }
-const DEFAULT_WIDTH = LANDSCAPE_MAX.width
-const DEFAULT_HEIGHT = LANDSCAPE_MAX.height
+const DEFAULT_WIDTH = 720
+const DEFAULT_HEIGHT = 512
 const DEFAULT_FPS = 24
+const MAX_LONG_EDGE = 720
+const FINAL_SIZE_MULTIPLE = 64
+const JOY_ECHO_STRENGTH = 0.35
+const USER_VIDEO_LORA_STRENGTH = 0.25
+const USER_VIDEO_LORA_COUNT = 9
+const NINE_STEP_CFG = '2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0'
+const NINE_STEP_STG = '1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0'
+const NINE_STEP_STG_RESCALE = '1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0'
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_PROMPT_LENGTH = 1000
 const MAX_NEGATIVE_PROMPT_LENGTH = 1000
-const DEFAULT_DISTILL_LORA_NAME =
-  'ltx23/ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors'
-const DEFAULT_DISTILL_LORA_STRENGTH = 0.65
-const PROMPT_SUFFIX =
-  'consistent color grading, stable lighting, clean high quality video, smooth motion, stable camera'
 const DEFAULT_NEGATIVE_PROMPT =
   'still image, bad quality, subtitles, text, watermark, logo, blur, low quality, noise, artifacts, extra limbs, distorted anatomy, flicker, motion artifacts'
-const AUDIO_NEGATIVE_PROMPT =
-  'background noise, ambient sound, environmental sound, wind noise, street noise, room tone, crowd noise, nature sounds, water sound, rain sound, traffic noise, machinery noise, static noise, hiss, hum, buzz, echo, reverb, muffled audio, distorted audio, unwanted sound effect, music, background music, bgm'
+const CLEAN_AUDIO_NEGATIVE = [
+  'background noise',
+  'hiss',
+  'hum',
+  'distorted voice',
+  'robotic voice',
+  'echo',
+  'audio artifacts',
+]
+const JAPANESE_BLOCKING_NEGATIVES = new Set([
+  'non-english',
+  'foreign language',
+  'russian',
+  'chinese',
+  'japanese',
+])
 const INTERNAL_SERVER_ERROR_MESSAGE =
   'サーバー内部エラーが発生しました。時間をおいて再度お試しください。'
 const ERROR_LOGIN_REQUIRED = 'ログインが必要です。'
@@ -55,11 +67,7 @@ const jsonResponse = (body: unknown, status = 200, headers: HeadersInit = {}) =>
     headers: { ...headers, 'Content-Type': 'application/json' },
   })
 
-const resolveEndpoint = (env: Env) =>
-  (
-    env.RUNPOD_I2AV_TEST_ENDPOINT_URL ??
-    DEFAULT_RUNPOD_ENDPOINT
-  ).replace(/\/$/, '')
+const resolveEndpoint = (_env: Env) => RUNPOD_10EROS_ENDPOINT
 
 const resolveRunpodApiKey = (env: Env) =>
   (
@@ -473,38 +481,15 @@ const ensureBase64Input = (label: string, value: unknown) => {
   return base64
 }
 
-const parseOptionalNumber = (value: unknown, min: number, max: number) => {
-  const numberValue = Number(value)
-  if (!Number.isFinite(numberValue)) return undefined
-  const rounded = Math.floor(numberValue)
-  if (rounded < min || rounded > max) return undefined
-  return rounded
-}
+const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value))
 
-const alignToLtxMultiple = (value: number) =>
-  Math.max(LTX_DIMENSION_MULTIPLE, Math.round(value / LTX_DIMENSION_MULTIPLE) * LTX_DIMENSION_MULTIPLE)
+const roundToModelSize = (value: number) =>
+  Math.max(FINAL_SIZE_MULTIPLE, Math.round(value / FINAL_SIZE_MULTIPLE) * FINAL_SIZE_MULTIPLE)
 
-const fitWithinBounds = (width: number, height: number, maxWidth: number, maxHeight: number) => {
-  const scale = Math.min(1, maxWidth / width, maxHeight / height)
-  const scaledWidth = width * scale
-  const scaledHeight = height * scale
-  const aspect = width / height
-
-  if (aspect >= 1) {
-    const targetWidth = Math.min(maxWidth, alignToLtxMultiple(scaledWidth))
-    const targetHeight = Math.min(maxHeight, alignToLtxMultiple(targetWidth / aspect))
-    return { width: targetWidth, height: targetHeight }
-  }
-
-  const targetHeight = Math.min(maxHeight, alignToLtxMultiple(scaledHeight))
-  const targetWidth = Math.min(maxWidth, alignToLtxMultiple(targetHeight * aspect))
-  return { width: targetWidth, height: targetHeight }
-}
-
-const toSafeLtxDimensions = (width: number, height: number) => {
-  const isPortrait = height >= width
-  const bounds = isPortrait ? PORTRAIT_MAX : LANDSCAPE_MAX
-  return fitWithinBounds(width, height, bounds.width, bounds.height)
+const normalizeDimension = (value: unknown) => {
+  const parsed = Math.floor(Number(value))
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined
+  return Math.max(16, Math.min(2048, parsed))
 }
 
 const normalizeSeed = (value: unknown) => {
@@ -523,73 +508,73 @@ const ticketCostForSeconds = (seconds: number) =>
 
 const isAllowedSeconds = (seconds: number) => VIDEO_DURATION_OPTIONS.some((option) => option.seconds === seconds)
 
-const appendPromptSuffix = (prompt: string) => {
-  const trimmed = prompt.trim()
-  if (!trimmed) return PROMPT_SUFFIX
-  return `${trimmed}, ${PROMPT_SUFFIX}`
-}
-
-const normalizeDistillLoraStrength = (value: unknown) => {
-  const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return DEFAULT_DISTILL_LORA_STRENGTH
-  return Math.max(0, Math.min(2, parsed))
-}
-
-const buildNegativePrompt = (negativePrompt: string) =>
-  [negativePrompt, DEFAULT_NEGATIVE_PROMPT, AUDIO_NEGATIVE_PROMPT]
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join(', ')
-
-const buildRunpodInput = (input: any, env: Env, imageBase64: string, imageName: string) => {
+const buildRunpodInput = (input: any, _env: Env, imageBase64: string, _imageName: string) => {
   const rawPrompt = String(input?.prompt ?? input?.text ?? '').trim()
-  const negativePrompt = String(input?.negative_prompt ?? input?.negative ?? '').trim()
+  const rawNegativePrompt = String(input?.negative_prompt ?? input?.negative ?? '').trim()
   const seconds = normalizeSeconds(input?.seconds ?? input?.duration)
   const fps = DEFAULT_FPS
-  const requestedWidth = parseOptionalNumber(input?.width, 128, 2048) ?? DEFAULT_WIDTH
-  const requestedHeight = parseOptionalNumber(input?.height, 128, 2048) ?? DEFAULT_HEIGHT
-  const { width, height } = toSafeLtxDimensions(requestedWidth, requestedHeight)
-  const distillLoraName = String(env.FOXAI_10EROS_DISTILL_LORA_NAME ?? DEFAULT_DISTILL_LORA_NAME).trim()
-  const distillStrength = normalizeDistillLoraStrength(env.FOXAI_10EROS_DISTILL_LORA_STRENGTH)
-  const runpodInput: Record<string, unknown> = {
-    mode: 'i2v',
-    prompt: appendPromptSuffix(rawPrompt),
-    negative_prompt: buildNegativePrompt(negativePrompt),
-    seconds,
-    fps,
-    width,
-    height,
-    audio_mode: String(input?.audio_mode ?? 'model'),
-    generate_audio: parseBoolean(input?.generate_audio, true),
-    randomize_seed: parseBoolean(input?.randomize_seed, true),
-    seed: normalizeSeed(input?.seed),
-    image_base64: imageBase64,
-    image_name: imageName,
-    metadata: {
-      service: 'dooble',
-      workflow: 'i2av-test',
-      seconds,
-      fps,
-      width,
-      height,
-      internal_audio: true,
-      distill_lora_strength: distillStrength,
-    },
+  const sourceWidth = normalizeDimension(input?.width) ?? DEFAULT_WIDTH
+  const sourceHeight = normalizeDimension(input?.height) ?? DEFAULT_HEIGHT
+  const landscape = sourceWidth >= sourceHeight
+  const longEdge = Math.floor(MAX_LONG_EDGE / FINAL_SIZE_MULTIPLE) * FINAL_SIZE_MULTIPLE
+  const shortEdge = Math.max(
+    256,
+    roundToModelSize(longEdge * Math.min(sourceWidth, sourceHeight) / Math.max(sourceWidth, sourceHeight)),
+  )
+  const width = landscape ? longEdge : shortEdge
+  const height = landscape ? shortEdge : longEdge
+  const frames = Math.round(seconds * fps) + 1
+  const workflow = clone(workflowTemplate) as Record<string, any>
+
+  workflow['837'].inputs.image = WORKFLOW_INPUT_IMAGE_NAME
+  workflow['536'].inputs.text = rawPrompt
+  const defaultNegative = String(workflow['537'].inputs.text || DEFAULT_NEGATIVE_PROMPT).trim()
+  const containsJapanese = /[\u3040-\u30ff\u3400-\u9fff]/.test(rawPrompt)
+  const defaultNegativeParts = defaultNegative
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !containsJapanese || !JAPANESE_BLOCKING_NEGATIVES.has(part.toLowerCase()))
+  workflow['537'].inputs.text = [
+    ...new Set([...defaultNegativeParts, ...CLEAN_AUDIO_NEGATIVE]),
+    rawNegativePrompt,
+  ].filter(Boolean).join(', ')
+
+  const randomizeSeed = parseBoolean(input?.randomize_seed, true)
+  workflow['525'].inputs.noise_seed = randomizeSeed
+    ? Math.floor(Math.random() * 1125899906842624)
+    : normalizeSeed(input?.seed) || 1
+
+  workflow['853'].inputs.strength_model = JOY_ECHO_STRENGTH
+  workflow['850'].inputs.strength_1 = 1.0
+  workflow['850'].inputs.audio_weight_1 = 1.0
+  workflow['850'].inputs.video_weight_1 = 0.68
+  for (let index = 1; index <= USER_VIDEO_LORA_COUNT; index += 1) {
+    workflow['868'].inputs[`strength_${index}`] = USER_VIDEO_LORA_STRENGTH
   }
 
-  const videoCfg = Number(input?.video_cfg)
-  if (Number.isFinite(videoCfg)) {
-    runpodInput.video_cfg = videoCfg
-  }
-  if (distillLoraName && distillStrength > 0) {
-    runpodInput.loras = [{ name: distillLoraName, strength: distillStrength }]
-  }
-  const comfyKey = String(env.COMFY_ORG_API_KEY ?? '').trim()
-  if (comfyKey) {
-    runpodInput.comfy_org_api_key = comfyKey
+  workflow['542'].inputs.value = fps
+  workflow['796'].inputs.Xi = frames
+  workflow['796'].inputs.Xf = frames
+  workflow['535'].inputs.frames_number = frames
+  workflow['535'].inputs.frame_rate = fps
+  workflow['836'].inputs.cfg_per_step = NINE_STEP_CFG
+  workflow['836'].inputs.stg_scale_per_step = NINE_STEP_STG
+  workflow['836'].inputs.stg_rescale_per_step = NINE_STEP_STG_RESCALE
+  workflow['791'].inputs.Xi = width
+  workflow['791'].inputs.Xf = width
+  workflow['792'].inputs.Xi = height
+  workflow['792'].inputs.Xf = height
+  workflow['549'].inputs.frame_rate = fps
+  workflow['549'].inputs.save_output = true
+  workflow['549'].inputs.save_metadata = false
+
+  const runpodInput = {
+    workflow,
+    images: [{ name: WORKFLOW_INPUT_IMAGE_NAME, data: imageBase64 }],
   }
 
-  return { runpodInput, rawPrompt, seconds, fps, width, height, distillStrength }
+  return { runpodInput, rawPrompt, seconds, fps, width, height }
 }
 
 export const onRequestOptions: PagesFunction<Env> = async ({ request, env }) => {
